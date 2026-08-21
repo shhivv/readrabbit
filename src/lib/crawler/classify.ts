@@ -70,6 +70,9 @@ const BLOCKED_DOMAINS = new Set([
   "worksinprogress.co", "thedailyeconomy.org", "prospect.org",
   "americanaffairsjournal.org", "compactmag.com", "unherd.com",
   "unsplash.com", "wordcamp.org", "wp.me",
+  // bare platform hosts (corporate blogs live here; personal subdomains of
+  // these platforms stay allowed via PLATFORM_ROOTS)
+  "wordpress.com", "wordpress.org",
 ]);
 
 // Platforms hosting many independent blogs under their own domain. The

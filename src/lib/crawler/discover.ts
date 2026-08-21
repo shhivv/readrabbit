@@ -215,7 +215,15 @@ async function isDuplicateVoice(
   for (const row of existing) {
     const n = normalizeName(row.name);
     if (!n || n.length < 6) continue;
-    if (authors.has(n) || n === titleNorm) return true;
+    if (
+      authors.has(n) ||
+      n === titleNorm ||
+      // containment catches honorifics/suffixes ("Sebastian Raschka, PhD")
+      (n.length >= 8 &&
+        [...authors].some((a) => a.length >= 8 && (a.includes(n) || n.includes(a))))
+    ) {
+      return true;
+    }
   }
   return false;
 }
