@@ -98,10 +98,61 @@ export function splitMathSegments(text: string): Segment[] {
   return segments;
 }
 
+// innerHTML round-trips escape <,>,& inside text nodes; TeX extracted from
+// them must be unescaped before hitting the KaTeX parser.
+export function decodeEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+      String.fromCharCode(parseInt(hex, 16))
+    )
+    .replace(/&amp;/g, "&");
+}
+
 function mathHtml(segmentValue: string, displayMode: boolean): string | null {
-  const rendered = renderTex(segmentValue.trim(), displayMode);
+  const rendered = renderTex(decodeEntities(segmentValue).trim(), displayMode);
   if (!rendered) return null;
   return `<nc-math data-nc-display="${displayMode ? 1 : 0}">${rendered}</nc-math>`;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Runs BEFORE sanitization: MathJax-v2 <script type="math/tex"> nodes become
+// nc-math placeholders carrying the raw TeX as text, so they survive cleanup
+// and get rendered by renderMathInHtml afterwards.
+export function convertMathScripts(html: string): string {
+  try {
+    const { document } = parseHTML(`<html><body>${html}</body></html>`);
+    let changed = false;
+
+    for (const script of Array.from(
+      document.querySelectorAll('script[type^="math/tex"]')
+    )) {
+      const modeAttr = script.getAttribute("type") ?? "";
+      const displayMode = modeAttr.includes("mode=display");
+      const tex = script.textContent ?? "";
+      if (!tex.trim()) continue;
+      const holder = document.createElement("nc-math");
+      holder.setAttribute("data-nc-display", displayMode ? "1" : "0");
+      holder.textContent = tex;
+      script.replaceWith(holder);
+      changed = true;
+    }
+
+    return changed ? document.body.innerHTML : html;
+  } catch {
+    return html;
+  }
 }
 
 export function renderMathInHtml(html: string): string {
@@ -114,34 +165,27 @@ export function renderMathInHtml(html: string): string {
   }
 
   try {
-    // MathJax v2 script-tag style first (before any other pass strips it)
-    for (const script of Array.from(
-      document.querySelectorAll('script[type^="math/tex"]')
+    // fill nc-math placeholders that still carry raw TeX text (from
+    // convertMathScripts) — these are display/inline by attribute
+    for (const node of Array.from(
+      document.querySelectorAll("nc-math")
     )) {
-      const modeAttr = script.getAttribute("type") ?? "";
-      const displayMode = modeAttr.includes("mode=display");
-      const tex = script.textContent ?? "";
-      const rendered = mathHtml(tex, displayMode);
+      const raw = node.textContent ?? "";
+      const hasRendered = node.querySelector(".katex") != null;
+      if (!raw.trim() || hasRendered) continue;
+      const displayMode = node.getAttribute("data-nc-display") === "1";
+      const rendered = mathHtml(raw, displayMode);
       if (!rendered) continue;
-
-      const parent = script.parentElement;
+      const holder = document.createElement("span");
+      holder.innerHTML = rendered;
+      const parent = node.parentElement;
       if (!parent) continue;
-      if (parent.tagName.toLowerCase() === "p") {
-        const holder = document.createElement("div");
-        holder.innerHTML = rendered;
-        const p = parent.parentElement;
-        if (p) {
-          while (holder.firstChild) {
-            p.insertBefore(holder.firstChild, parent);
-          }
-          parent.remove();
-        }
-      } else {
-        const holder = document.createElement("span");
-        holder.innerHTML = rendered;
-        script.replaceWith(holder);
-      }
+      parent.replaceChild(holder, node);
     }
+
+    // Merge adjacent text nodes — HTML entities (&gt; etc.) create node
+    // boundaries that would otherwise split delimiters like \( ... \) in half.
+    document.body?.normalize?.();
 
     // Walk text nodes; skip code/pre so snippets keep their dollars
     const walker = document.createTreeWalker(document.body, 4); // SHOW_TEXT

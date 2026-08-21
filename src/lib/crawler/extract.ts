@@ -1,6 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import { renderMathInHtml } from "./math";
+import { renderMathInHtml, convertMathScripts } from "./math";
 
 export interface ExtractedArticle {
   title: string;
@@ -65,6 +65,8 @@ function sanitizeDocument(document: Document, baseUrl: string): void {
 
     for (const attr of Array.from(el.attributes ?? [])) {
       const name = attr.name.toLowerCase();
+      if (tag === "nc-math" && name === "data-nc-display") continue;
+
       const drop =
         name.startsWith("on") ||
         name === "style" ||
@@ -100,7 +102,9 @@ function sanitizeDocument(document: Document, baseUrl: string): void {
 
 export function extractFromHtml(html: string, url: string): ExtractedArticle | null {
   try {
-    const { document } = parseHTML(html);
+    // MathJax script tags → nc-math placeholders before any sanitization
+    const prepared = convertMathScripts(html);
+    const { document } = parseHTML(prepared);
 
     // metadata before readability mutates the tree
     const meta = extractMetadata(document, url);
@@ -108,7 +112,7 @@ export function extractFromHtml(html: string, url: string): ExtractedArticle | n
     let extracted: ReturnType<Readability["parse"]> = null;
     try {
       // Readability mutates its own clone internally; give it a fresh parse
-      const { document: readableDoc } = parseHTML(html);
+      const { document: readableDoc } = parseHTML(prepared);
       const reader = new Readability(readableDoc as unknown as globalThis.Document);
       extracted = reader.parse() as ReturnType<Readability["parse"]>;
     } catch {
@@ -134,7 +138,7 @@ export function extractFromHtml(html: string, url: string): ExtractedArticle | n
       contentHtml = sanitizeDoc.body.innerHTML;
       textContent = sanitizeDoc.body.textContent ?? textContent;
     } else {
-      const heuristic = heuristicExtract(html, url);
+      const heuristic = heuristicExtract(prepared, url);
       if (!heuristic) return null;
       contentHtml = heuristic.html;
       textContent = heuristic.text;
@@ -260,7 +264,7 @@ function heuristicExtract(
     sanitizeDocument(document, baseUrl);
 
     const candidates = Array.from(
-      document.querySelectorAll("p, pre, blockquote")
+      document.querySelectorAll("p, pre, blockquote, nc-math")
     ) as HTMLElement[];
 
     const scored = candidates
@@ -308,7 +312,10 @@ function heuristicExtract(
 
       const tag = c.node.tagName.toLowerCase();
       seen.add(c.node);
-      if (tag === "pre" || tag === "blockquote") {
+      if (tag === "nc-math") {
+        // pre-converted math placeholder — carry through untouched
+        parts.push(c.node.outerHTML);
+      } else if (tag === "pre" || tag === "blockquote") {
         parts.push(`<${tag}>${escapeHtml(c.text)}</${tag}>`);
       } else {
         const innerHtml = (c.node as HTMLElement).innerHTML ?? escapeHtml(c.text);

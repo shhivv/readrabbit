@@ -463,6 +463,17 @@ export async function setBookmarked(
 
 // ---------- interests ----------
 
+export async function getInterestIndices(
+  articleId: number
+): Promise<Set<number>> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ paragraph_index: number }>(
+    "SELECT paragraph_index FROM interests WHERE article_id = ?",
+    [articleId]
+  );
+  return new Set(rows.map((r) => r.paragraph_index));
+}
+
 export async function toggleInterest(
   articleId: number,
   paragraphIndex: number,
