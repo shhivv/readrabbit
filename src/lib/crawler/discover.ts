@@ -179,6 +179,47 @@ function isNonBlogFeedTitle(title: string): boolean {
   return NON_BLOG_TITLE.test(title);
 }
 
+// Editorial outlets rotate writers; personal blogs don't. A candidate whose
+// recent entries carry ≥4 distinct bylines is a magazine/newsroom, not an
+// independent voice — exactly what the reader is not for.
+const EDITORIAL_DISTINCT_AUTHORS = 4;
+
+function distinctAuthors(entries: Array<{ author: string }>): number {
+  return new Set(
+    entries.map((e) => e.author.trim().toLowerCase()).filter(Boolean)
+  ).size;
+}
+
+function normalizeName(raw: string): string {
+  return raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Same writer, second domain ("Ahead of AI" vs seeded sebastianraschka.com):
+// if any of the candidate's entry authors matches an existing source's name,
+// we already carry that voice — adding another feed of theirs just makes the
+// repetition problem worse.
+async function isDuplicateVoice(
+  db: Awaited<ReturnType<typeof getDb>>,
+  feed: { title: string; entries: Array<{ author: string }> }
+): Promise<boolean> {
+  const authors = new Set<string>();
+  for (const e of feed.entries) {
+    const n = normalizeName(e.author);
+    if (n.length >= 6) authors.add(n); // guard against short-name collisions
+  }
+  const titleNorm = normalizeName(feed.title);
+
+  const existing = await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sources"
+  );
+  for (const row of existing) {
+    const n = normalizeName(row.name);
+    if (!n || n.length < 6) continue;
+    if (authors.has(n) || n === titleNorm) return true;
+  }
+  return false;
+}
+
 // Probing one candidate = homepage fetch + feed autodiscovery + feed fetch,
 // all serial *within* the candidate's host (politeness) but fully parallel
 // *across* candidates. Sequential probing was the single largest cost of the
@@ -242,6 +283,15 @@ export async function probeTopCandidates(limit: number): Promise<ProbeResult[]> 
         // genre for a reading app
         rejected[domain] = Date.now();
         return { domain, outcome: "blocked" };
+      }
+      if (distinctAuthors(feed.entries) >= EDITORIAL_DISTINCT_AUTHORS) {
+        rejected[domain] = Date.now();
+        return { domain, outcome: "blocked" };
+      }
+      if (await isDuplicateVoice(db, feed)) {
+        delete pool[domain];
+        poolDirty = true;
+        return { domain, outcome: "known" };
       }
 
       await upsertSource({

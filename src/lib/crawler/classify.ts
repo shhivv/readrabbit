@@ -64,6 +64,20 @@ const BLOCKED_DOMAINS = new Set([
   // institutional research / advocacy publications (not independent writers)
   "cepr.org", "voxeu.org", "ourworldindata.org", "quillette.com",
   "nber.org", "ssrn.com", "scholar.google.com",
+  // media outlets / advocacy orgs / event & asset sites that outbound
+  // discovery keeps surfacing
+  "reason.com", "404media.co", "eff.org", "epic.org",
+  "worksinprogress.co", "thedailyeconomy.org", "prospect.org",
+  "americanaffairsjournal.org", "compactmag.com", "unherd.com",
+  "unsplash.com", "wordcamp.org", "wp.me",
+]);
+
+// Platforms hosting many independent blogs under their own domain. The
+// blocklist may contain these roots (e.g. wordpress.com's corporate blog)
+// but they must only match the BARE host — foo.wordpress.com stays allowed.
+const PLATFORM_ROOTS = new Set([
+  "wordpress.com", "substack.com", "github.io", "blogspot.com",
+  "ghost.io", "write.as", "bearblog.dev", "mataroa.blog", "omg.lol",
 ]);
 
 const BLOCKED_TLDS = new Set([".gov", ".mil", ".edu", ".ac.uk"]);
@@ -100,7 +114,12 @@ export function classifyDomain(urlOrDomain: string): Classification {
 
   const domain = rootDomain(host);
   if (BLOCKED_DOMAINS.has(domain) || BLOCKED_DOMAINS.has(host)) {
-    return { allowed: false, reason: "blocked domain" };
+    // platform roots must only block their bare host: wordpress.com's
+    // corporate blog is out, but an independent blog at foo.wordpress.com
+    // is exactly the kind of writer this app exists for.
+    if (!PLATFORM_ROOTS.has(domain) || host === domain || BLOCKED_DOMAINS.has(host)) {
+      return { allowed: false, reason: "blocked domain" };
+    }
   }
 
   return { allowed: true, reason: "" };
