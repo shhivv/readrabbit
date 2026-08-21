@@ -1,21 +1,49 @@
-import { Stack } from "expo-router";
+import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { useEffect, useState } from "react";
 import { View, ActivityIndicator } from "react-native";
-import { colors, fonts as fontNames } from "@/lib/theme";
+import { colors } from "@/lib/theme";
+import { allFonts } from "@/lib/fonts";
+import { getDb, kvGet } from "@/lib/db";
 
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
-    Geist: require("@expo-google-fonts/geist/400Regular/Geist_400Regular.ttf"),
-    "Geist-Bold": require("@expo-google-fonts/geist/700Bold/Geist_700Bold.ttf"),
-    "Geist-Mono": require("@expo-google-fonts/geist-mono/400Regular/GeistMono_400Regular.ttf"),
-  });
+  const [fontsLoaded] = useFonts(allFonts());
+  const [ready, setReady] = useState(false);
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  const router = useRouter();
+  const segments = useSegments();
 
-  if (!fontsLoaded) {
+  useEffect(() => {
+    if (!fontsLoaded) return;
+    (async () => {
+      try {
+        await getDb();
+        const flag = await kvGet("onboarded");
+        setOnboarded(flag === "1");
+      } catch {
+        setOnboarded(false);
+      }
+      SplashScreen.hideAsync().catch(() => {});
+      setReady(true);
+    })();
+  }, [fontsLoaded]);
+
+  useEffect(() => {
+    if (!ready || onboarded == null) return;
+    const inOnboarding = segments[0] === "onboarding";
+    if (!onboarded && !inOnboarding) {
+      router.replace("/onboarding");
+    } else if (onboarded && inOnboarding) {
+      router.replace("/");
+    }
+  }, [ready, onboarded, segments, router]);
+
+  if (!ready || !fontsLoaded) {
     return (
       <View
         style={{
@@ -30,8 +58,6 @@ export default function RootLayout() {
     );
   }
 
-  SplashScreen.hideAsync().catch(() => {});
-
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <>
@@ -41,7 +67,9 @@ export default function RootLayout() {
             headerShown: false,
             contentStyle: { backgroundColor: colors.bg },
           }}
-        />
+        >
+          <Stack.Screen name="onboarding" />
+        </Stack>
       </>
     </GestureHandlerRootView>
   );
