@@ -19,6 +19,8 @@ export interface SourceRow {
   etag: string | null;
   last_modified: string | null;
   last_fetched_at: number | null;
+  avg_update_hours: number;
+  next_check_at: number | null;
   created_at: number;
 }
 
@@ -42,6 +44,7 @@ export interface ArticleRow {
   is_bookmarked: number;
   read_at: number | null;
   score: number;
+  quality: number;
 }
 
 export interface InterestRow {
@@ -85,9 +88,9 @@ async function migrate(db: SQLite.SQLiteDatabase) {
         status TEXT NOT NULL DEFAULT 'active',
         score REAL NOT NULL DEFAULT 0.5,
         consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        avg_update_hours REAL NOT NULL DEFAULT 24,
+        next_check_at INTEGER NOT NULL DEFAULT 0,
         etag TEXT,
-        last_modified TEXT,
-        last_fetched_at INTEGER,
         created_at INTEGER NOT NULL
       );
 
@@ -110,7 +113,8 @@ async function migrate(db: SQLite.SQLiteDatabase) {
         is_archived INTEGER NOT NULL DEFAULT 0,
         is_bookmarked INTEGER NOT NULL DEFAULT 0,
         read_at INTEGER,
-        score REAL NOT NULL DEFAULT 0
+        score REAL NOT NULL DEFAULT 0,
+        quality REAL NOT NULL DEFAULT 0
       );
 
       CREATE INDEX IF NOT EXISTS idx_articles_queue
@@ -247,28 +251,77 @@ export async function getActiveSources(limit = 100): Promise<SourceRow[]> {
 export async function recordSourceSuccess(
   sourceId: number,
   etag: string | null,
-  lastModified: string | null
+  lastModified: string | null,
+  newEntries: number
 ): Promise<void> {
   const db = await getDb();
+  const now = Date.now();
+  const prev = await db.getFirstAsync<{
+    last_fetched_at: number | null;
+    avg_update_hours: number;
+  }>("SELECT last_fetched_at, avg_update_hours FROM sources WHERE id = ?", [
+    sourceId,
+  ]);
+
+  // Adaptive polling (Urbansky et al. ICWSM'11; Olston & Pandey TODS'06):
+  // EMA of observed inter-update gaps sets the next check time. Empty checks
+  // grow the interval, fresh content shrinks it toward the learned rhythm.
+  let intervalHours = prev?.avg_update_hours ?? 24;
+  if (newEntries > 0 && prev?.last_fetched_at) {
+    const gapHours =
+      (now - prev.last_fetched_at) / (1000 * 60 * 60);
+    if (gapHours >= 0.5 && gapHours <= 24 * 30) {
+      intervalHours = gapHours;
+    }
+    intervalHours = Math.min(intervalHours, 24 * 7);
+  } else {
+    intervalHours = Math.min(intervalHours * 1.3, 24 * 7);
+  }
+  const clampedInterval = Math.max(intervalHours, 0.5); // floor: 30 min
+  const jitter = 0.85 + Math.random() * 0.3;
+
   await db.runAsync(
     `UPDATE sources
      SET status = 'active', consecutive_failures = 0,
          etag = COALESCE(?, etag), last_modified = COALESCE(?, last_modified),
-         last_fetched_at = ?
+         last_fetched_at = ?, avg_update_hours = ?,
+         next_check_at = ?
      WHERE id = ?`,
-    [etag, lastModified, Date.now(), sourceId]
+    [
+      etag,
+      lastModified,
+      now,
+      clampedInterval,
+      now + clampedInterval * jitter * 60 * 60 * 1000,
+      sourceId,
+    ]
   );
 }
 
 export async function recordSourceFailure(sourceId: number): Promise<void> {
   const db = await getDb();
+  const now = Date.now();
   await db.runAsync(
     `UPDATE sources
      SET consecutive_failures = consecutive_failures + 1,
          status = CASE WHEN consecutive_failures + 1 >= 8 THEN 'dead' ELSE 'failing' END,
-         last_fetched_at = ?
+         last_fetched_at = ?,
+         next_check_at = ?
      WHERE id = ?`,
-    [Date.now(), sourceId]
+    [now, now + 6 * 60 * 60 * 1000, sourceId]
+  );
+}
+
+export async function getDueSources(limit = 100): Promise<SourceRow[]> {
+  const db = await getDb();
+  const now = Date.now();
+  return db.getAllAsync<SourceRow>(
+    `SELECT * FROM sources
+     WHERE status IN ('active', 'failing')
+       AND (next_check_at IS NULL OR next_check_at <= ?)
+     ORDER BY next_check_at ASC NULLS FIRST
+     LIMIT ?`,
+    [now, limit]
   );
 }
 
@@ -334,6 +387,7 @@ export async function setArticleContent(
     textContent?: string;
     leadImageUrl?: string;
     wordCount?: number;
+    quality?: number;
   }
 ): Promise<void> {
   const db = await getDb();
@@ -347,7 +401,8 @@ export async function setArticleContent(
        content_html = ?,
        text_content = ?,
        lead_image_url = ?,
-       word_count = ?
+       word_count = ?,
+       quality = ?
      WHERE id = ?`,
     [
       content.title ?? "",
@@ -359,8 +414,17 @@ export async function setArticleContent(
       content.textContent ?? "",
       content.leadImageUrl ?? "",
       content.wordCount ?? 0,
+      content.quality ?? 0,
       articleId,
     ]
+  );
+}
+
+export async function markArticleFailed(articleId: number): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    "UPDATE articles SET word_count = -1 WHERE id = ?",
+    [articleId]
   );
 }
 
