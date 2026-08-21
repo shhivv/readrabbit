@@ -1,4 +1,5 @@
 import {
+  bumpSourceTrust,
   getDueSources,
   getDb,
   kvGet,
@@ -293,7 +294,7 @@ async function enrichArticles(
   const cutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
 
   const candidates = await db.getAllAsync<ArticleRow>(
-    `SELECT id, url, title, score, fetched_at FROM articles
+    `SELECT id, source_id, url, title, score, fetched_at FROM articles
      WHERE word_count = 0 AND content_html = ''
        AND fetched_at > ?
        AND (published_date IS NULL OR published_date > ?)
@@ -372,6 +373,9 @@ async function enrichArticles(
             wordCount: extracted.wordCount,
             quality,
           });
+          if (article.source_id != null) {
+            await safeRecord(() => bumpSourceTrust(article.source_id!, quality));
+          }
           // a fresh full-text read counts as unread+ready for the deque
         } else {
           await markArticleFailed(article.id);

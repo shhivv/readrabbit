@@ -494,6 +494,23 @@ export async function markArticleFailed(articleId: number): Promise<void> {
   );
 }
 
+// Adaptive source trust: each enriched article nudges its source's score an
+// EMA step toward the article's measured quality. Sources consistently
+// publishing substantive prose earn stream weight; sources drifting into
+// listicle territory sink — slowly enough that one bad post isn't punished.
+export async function bumpSourceTrust(
+  sourceId: number,
+  quality: number
+): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE sources
+     SET score = MAX(0.3, MIN(0.85, score * 0.9 + ? * 0.1))
+     WHERE id = ?`,
+    [quality, sourceId]
+  );
+}
+
 export async function getArticleById(id: number): Promise<ArticleRow | null> {
   const db = await getDb();
   return db.getFirstAsync<ArticleRow>("SELECT * FROM articles WHERE id = ?", [
