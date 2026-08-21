@@ -15,6 +15,7 @@ import { fetchFeed } from "./feeds";
 import { collectOutboundLinks, enqueueCandidates, hnDiscover, probeTopCandidates } from "./discover";
 import { extractFromHtml } from "./extract";
 import { scoreArticleQuality } from "./quality";
+import { pruneStorage } from "../prune";
 
 export type CrawlMode = "initial" | "foreground" | "background";
 
@@ -106,6 +107,10 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
     onProgress?.({ phase: "discover", done: 0, total: DISCOVER_PROBES[mode] });
     await hnDiscover();
     await probeTopCandidates(DISCOVER_PROBES[mode]);
+  }
+  if (mode !== "initial") {
+    // keep first-open snappy; prune on every subsequent cycle
+    pruneStorage().catch(() => {});
   }
   onProgress?.({ phase: "done", done: 1, total: 1 });
 }
