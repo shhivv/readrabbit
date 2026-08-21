@@ -46,7 +46,7 @@ const BUDGET_MS: Record<CrawlMode, number> = {
 };
 
 const ENRICH_BATCH: Record<CrawlMode, number> = {
-  initial: 120,
+  initial: 150,
   foreground: 24,
   background: 24,
 };
@@ -297,7 +297,7 @@ async function enrichArticles(
      WHERE word_count = 0 AND content_html = ''
        AND fetched_at > ?
        AND (published_date IS NULL OR published_date > ?)
-     ORDER BY score DESC, fetched_at DESC
+     ORDER BY score DESC, COALESCE(published_date, fetched_at) DESC
      LIMIT ?`,
     [cutoff, cutoff, batch]
   );
