@@ -71,16 +71,35 @@ async function main() {
   console.log(`✓ catalog seeded (+${seeded}), crawling ${sources.length} sources`);
 
   // ---- crawl ----
-  const phases: Record<string, { start: number; end?: number }> = {};
+  const phases: Record<string, { start: number; end?: number; rssPeak?: number; rssAfterGc?: number }> = {};
   let lastPhase = "";
+  let rssPeak = 0;
+  const rssNow = () => {
+    const rss = process.memoryUsage.rss();
+    if (rss > rssPeak) rssPeak = rss;
+    return rss;
+  };
+  rssNow();
+  const rssTimer = setInterval(rssNow, 250);
+  let lastGcTick = 0;
   const { runCrawl } = await import("../src/lib/crawler/engine");
   const ok = await runCrawl({
     mode: "initial",
     onProgress: (p) => {
+      // Bun's heap only shrinks on explicit GC; Hermes (on-device) collects
+      // continuously. Forcing GC here approximates what the phone's live
+      // working set looks like, separate from allocator high-water.
+      if (p.phase !== "done" && p.done - lastGcTick >= 25) {
+        lastGcTick = p.done;
+        Bun.gc(false);
+      }
       if (!(p.phase in phases)) {
         // close out the previous phase on transition
         if (lastPhase && phases[lastPhase] && phases[lastPhase].end == null) {
           phases[lastPhase].end = Date.now();
+          phases[lastPhase].rssPeak = rssNow();
+          Bun.gc(true);
+          phases[lastPhase].rssAfterGc = process.memoryUsage.rss();
         }
         phases[p.phase] = { start: Date.now() };
         lastPhase = p.phase;
@@ -90,6 +109,7 @@ async function main() {
       );
     },
   });
+  clearInterval(rssTimer);
   if (lastPhase && phases[lastPhase]?.end == null) {
     phases[lastPhase].end = Date.now();
   }
@@ -147,8 +167,13 @@ async function main() {
     const ph = phases[name];
     if (!ph) continue;
     const ms = (ph.end ?? Date.now()) - ph.start;
-    console.log(`  ${name.padEnd(9)} phase: ${(ms / 1000).toFixed(1)}s`);
+    const rss = ph.rssPeak ? `  peak ${(ph.rssPeak / 1024 / 1024).toFixed(0)} MB, after-gc ${((ph.rssAfterGc ?? 0) / 1024 / 1024).toFixed(0)} MB` : "";
+    console.log(`  ${name.padEnd(9)} phase: ${(ms / 1000).toFixed(1)}s${rss}`);
   }
+  Bun.gc(true);
+  console.log(
+    `  overall peak: ${(rssPeak / 1024 / 1024).toFixed(0)} MB, final after-gc: ${(process.memoryUsage.rss() / 1024 / 1024).toFixed(0)} MB`
+  );
 }
 
 main().catch((err) => {

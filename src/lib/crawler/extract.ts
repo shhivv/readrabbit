@@ -15,6 +15,11 @@ export interface ExtractedArticle {
 }
 
 const MAX_CONTENT_HTML_BYTES = 300_000;
+// Cap on the HTML fed into parsing/extraction. linkedom DOM nodes cost
+// ~35× the raw HTML in heap, so an uncapped multi-MB page parsed by several
+// workers at once spikes memory hard on phones. Long tail beyond this is
+// comments/boilerplate that Readability discards anyway.
+const MAX_EXTRACT_INPUT_BYTES = 600_000;
 
 const ALLOWED_TAGS = new Set([
   "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -40,6 +45,22 @@ function safeUrl(raw: string | undefined, base: string): string {
   } catch {
     return "";
   }
+}
+
+// Strip script/style/svg/comment blocks at the string level, before DOM
+// construction. They carry no article content but become thousands of DOM
+// nodes (linkedom nodes cost ~35× their source bytes in heap), so removing
+// them here is the single biggest extraction-memory lever. Head/meta/tags
+// stay — metadata extraction reads them.
+const PRE_TRIM_BLOCK = /<(script|style|noscript|template|svg|iframe|form)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const PRE_TRIM_VOID = /<(script|style|noscript|iframe)\b[^>]*\/?>/gi;
+const PRE_TRIM_COMMENT = /<!--[\s\S]*?-->/g;
+
+export function preTrim(html: string): string {
+  return html
+    .replace(PRE_TRIM_COMMENT, " ")
+    .replace(PRE_TRIM_BLOCK, " ")
+    .replace(PRE_TRIM_VOID, " ");
 }
 
 function sanitizeDocument(document: Document, baseUrl: string): void {
@@ -100,10 +121,12 @@ function sanitizeDocument(document: Document, baseUrl: string): void {
   }
 }
 
-export function extractFromHtml(html: string, url: string): ExtractedArticle | null {
+export function extractFromHtml(rawHtml: string, url: string): ExtractedArticle | null {
   try {
+    const html = rawHtml.slice(0, MAX_EXTRACT_INPUT_BYTES);
     // MathJax script tags → nc-math placeholders before any sanitization
-    const prepared = convertMathScripts(html);
+    // (they must survive preTrim, which strips everything else script-y)
+    const prepared = preTrim(convertMathScripts(html));
     const { document } = parseHTML(prepared);
 
     // metadata first — Readability then reuses and mutates this same tree,

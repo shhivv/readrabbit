@@ -38,10 +38,18 @@ interface Segment {
 // Split raw text into plain segments and math segments. Conservative on
 // single-$: requires latex-ish content and no whitespace hugging the openers,
 // so prices ("it costs $5 and $10") stay untouched.
+//
+// Single pass with sticky regexes and indexOf — never slices the remaining
+// text per character (the naive `text.slice(i)` version is O(n²) in
+// allocations and chokes long math-heavy paragraphs).
 export function splitMathSegments(text: string): Segment[] {
   const segments: Segment[] = [];
   let buffer = "";
   let i = 0;
+
+  const ddRe = /\$\$([\s\S]+?)\$\$/y;
+  const bracketRe = /\\\[([\s\S]+?)\\\]/y;
+  const parenRe = /\\\(([\s\S]+?)\\\)/y;
 
   const flush = () => {
     if (buffer) {
@@ -51,51 +59,66 @@ export function splitMathSegments(text: string): Segment[] {
   };
 
   while (i < text.length) {
-    const rest = text.slice(i);
+    let match: RegExpExecArray | null;
 
-    const dd = rest.match(/^\$\$([\s\S]+?)\$\$/);
-    if (dd) {
+    ddRe.lastIndex = i;
+    if ((match = ddRe.exec(text))) {
       flush();
-      segments.push({ type: "display-math", value: dd[1] });
-      i += dd[0].length;
+      segments.push({ type: "display-math", value: match[1] });
+      i += match[0].length;
       continue;
     }
 
-    const bracket = rest.match(/^\\\[([\s\S]+?)\\\]/);
-    if (bracket) {
+    bracketRe.lastIndex = i;
+    if ((match = bracketRe.exec(text))) {
       flush();
-      segments.push({ type: "display-math", value: bracket[1] });
-      i += bracket[0].length;
+      segments.push({ type: "display-math", value: match[1] });
+      i += match[0].length;
       continue;
     }
 
-    const paren = rest.match(/^\\\(([\s\S]+?)\\\)/);
-    if (paren) {
+    parenRe.lastIndex = i;
+    if ((match = parenRe.exec(text))) {
       flush();
-      segments.push({ type: "inline-math", value: paren[1] });
-      i += paren[0].length;
+      segments.push({ type: "inline-math", value: match[1] });
+      i += match[0].length;
       continue;
     }
 
-    if (rest[0] === "$" && rest[1] !== undefined && !/\s/.test(rest[1])) {
-      const close = rest.slice(1).indexOf("$");
-      if (close > 0 && !/\s$/.test(rest.slice(1, close + 1))) {
-        const candidate = rest.slice(1, close + 1);
+    if (
+      text.charCodeAt(i) === 36 /* $ */ &&
+      text[i + 1] !== undefined &&
+      !/\s/.test(text[i + 1])
+    ) {
+      const close = text.indexOf("$", i + 1);
+      if (close > i + 1 && !/\s$/.test(text.slice(i + 1, close + 1))) {
+        const candidate = text.slice(i + 1, close);
         if (looksLikeLatex(candidate)) {
           flush();
           segments.push({ type: "inline-math", value: candidate });
-          i += close + 2;
+          i = close + 1;
           continue;
         }
       }
     }
 
-    buffer += text[i];
-    i += 1;
+    const nextSpecial = Math.max(nextDelimiter(text, i), i + 1);
+    buffer += text.slice(i, nextSpecial);
+    i = nextSpecial;
   }
 
   flush();
   return segments;
+}
+
+// Jump ahead to the next character that could start a delimiter ($ or \),
+// so plain prose is consumed in bulk slices instead of char-by-char.
+function nextDelimiter(text: string, from: number): number {
+  for (let j = from; j < text.length; j++) {
+    const c = text.charCodeAt(j);
+    if (c === 36 || c === 92) return j; // $ or backslash
+  }
+  return text.length;
 }
 
 // innerHTML round-trips escape <,>,& inside text nodes; TeX extracted from
@@ -127,32 +150,19 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-// Runs BEFORE sanitization: MathJax-v2 <script type="math/tex"> nodes become
-// nc-math placeholders carrying the raw TeX as text, so they survive cleanup
-// and get rendered by renderMathInHtml afterwards.
+// Runs BEFORE sanitization/preTrim: MathJax-v2 <script type="math/tex"> nodes
+// become nc-math placeholders carrying the raw TeX as text, so they survive
+// cleanup and get rendered by renderMathInHtml afterwards.
+//
+// Pure string transformation — MathJax tags are machine-generated with a
+// predictable shape, so this avoids a full throwaway DOM parse per article.
+const MATHJAX_SCRIPT = /<script\s+type=["']math\/tex(;\s*mode=display)?["'][^>]*>([\s\S]*?)<\/script\s*>/gi;
+
 export function convertMathScripts(html: string): string {
-  try {
-    const { document } = parseHTML(`<html><body>${html}</body></html>`);
-    let changed = false;
-
-    for (const script of Array.from(
-      document.querySelectorAll('script[type^="math/tex"]')
-    )) {
-      const modeAttr = script.getAttribute("type") ?? "";
-      const displayMode = modeAttr.includes("mode=display");
-      const tex = script.textContent ?? "";
-      if (!tex.trim()) continue;
-      const holder = document.createElement("nc-math");
-      holder.setAttribute("data-nc-display", displayMode ? "1" : "0");
-      holder.textContent = tex;
-      script.replaceWith(holder);
-      changed = true;
-    }
-
-    return changed ? document.body.innerHTML : html;
-  } catch {
-    return html;
-  }
+  if (!html.includes("math/tex")) return html;
+  return html.replace(MATHJAX_SCRIPT, (_, displayMode: string | undefined, tex: string) =>
+    `<nc-math data-nc-display="${displayMode ? 1 : 0}">${tex}</nc-math>`
+  );
 }
 
 export function renderMathInHtml(html: string): string {

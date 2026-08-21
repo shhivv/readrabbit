@@ -33,7 +33,11 @@ function weightedSampleQuery(limit: number): string {
   const recency = `POWER(0.5, MAX(${ageDays}, -30) / ${HALF_LIFE_DAYS}.0)`;
   // ABS(RANDOM()) mapped to (0,1]
   const uniform = `((ABS(RANDOM()) % 1000000) + 1) / 1000001.0`;
-  const key = `(MAX(quality, 0.05) * ${recency} * ${uniform})`;
+  // source trust prior (articles.score mirrors the origin-based source
+  // prior): seeded personal blogs get a gentle edge over freshly
+  // discovered domains of unknown quality.
+  const trust = `(0.75 + 0.5 * MIN(MAX(score, 0.0), 1.0))`;
+  const key = `(MAX(quality, 0.05) * ${recency} * ${trust} * ${uniform})`;
   const diversityKey = `COALESCE(NULLIF(LOWER(TRIM(author)), ''), NULLIF(site_domain, ''), 's' || source_id)`;
   return `
     SELECT id FROM (

@@ -255,7 +255,9 @@ export async function fetchFeed(source: {
 
   return {
     notModified: false,
-    feed: parseFeed(res.text),
+    // oversized XML is almost always an error page or a firehose; parsing
+    // multi-MB docs spikes memory for no reading value
+    feed: parseFeed(res.text.slice(0, 1_500_000)),
     etag: res.etag,
     lastModified: res.lastModified,
     finalUrl: res.finalUrl,

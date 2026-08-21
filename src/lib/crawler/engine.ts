@@ -10,7 +10,7 @@ import {
   upsertArticleMeta,
   type ArticleRow,
 } from "../db";
-import { fetchText, getHost, HostScheduler } from "./fetcher";
+import { fetchText, getHost, HostScheduler, Semaphore } from "./fetcher";
 import { fetchFeed } from "./feeds";
 import {
   collectOutboundLinks,
@@ -47,8 +47,8 @@ const BUDGET_MS: Record<CrawlMode, number> = {
 
 const ENRICH_BATCH: Record<CrawlMode, number> = {
   initial: 120,
-  foreground: 20,
-  background: 15,
+  foreground: 24,
+  background: 24,
 };
 
 const DISCOVER_PROBES: Record<CrawlMode, number> = {
@@ -61,6 +61,13 @@ const DISCOVER_PROBES: Record<CrawlMode, number> = {
 // Archive-heavy feeds otherwise flood storage and enrichment budget with
 // years-old posts the reader would never show anyway.
 const MAX_INGEST_AGE_DAYS = 90;
+
+// Concurrent DOM parses allowed during enrichment (see extract gate below).
+const EXTRACT_CONCURRENCY = 3;
+// Feed parsing builds large object trees (full-content feeds can be MBs);
+// fewer simultaneous parses keeps the memory profile flat without hurting
+// wall-clock much — feed fetches overlap through the host scheduler either way.
+const FEED_PARSE_CONCURRENCY = 5;
 
 const LOCK_KEY = "engine_lock";
 const LOCK_STALE_MS = 15 * 60 * 1000;
@@ -110,7 +117,7 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
   // batching insight (keep the radio busy with back-to-back transfers) plus
   // Mercator's insight (politeness is a per-host property). 8 hosts in flight
   // keeps a burst tight while no single server sees more than ~1 req/1.2s.
-  const network = new HostScheduler(mode === "initial" ? 8 : 6);
+  const network = new HostScheduler(8);
 
   // candidate pool lives in memory for the whole crawl; flushed at phase ends
   await loadCandidates();
@@ -152,7 +159,7 @@ async function updateFeeds(
     onProgress?.({ phase: "feeds", done, total: sources.length });
   };
 
-  await runPool(sources, network.parallelism, (source) =>
+  await runPool(sources, FEED_PARSE_CONCURRENCY, (source) =>
     (async () => {
       if (Date.now() > deadline) return;
 
@@ -209,9 +216,10 @@ async function updateFeeds(
           if (inserted != null) newEntries++;
 
           // free link mining from feed content — no extra page fetches
+          // (summaries can carry full-article HTML; links live in the head)
           if (entry.summaryHtml.length > 200) {
             linkBatch.push(
-              ...collectOutboundLinks(entry.summaryHtml, entry.url)
+              ...collectOutboundLinks(entry.summaryHtml.slice(0, 50_000), entry.url)
             );
           }
         }
@@ -262,7 +270,9 @@ async function runPool<T>(
 
 function firstParagraphText(summaryHtml: string): string {
   if (!summaryHtml) return "";
+  // excerpt needs ~300 chars; don't regex whole full-article summaries
   const text = summaryHtml
+    .slice(0, 4000)
     .replace(/<[^>]*>/g, " ")
     .replace(/&[a-z#0-9]+;/gi, " ")
     .replace(/\s+/g, " ")
@@ -319,6 +329,8 @@ async function enrichArticles(
 
   onProgress?.({ phase: "enrich", done: 0, total: interleaved.length });
 
+  const extractGate = new Semaphore(EXTRACT_CONCURRENCY);
+
   let done = 0;
   const tick = () => {
     done++;
@@ -340,7 +352,12 @@ async function enrichArticles(
           "outbound"
         );
 
-        const extracted = extractFromHtml(res.text, res.finalUrl || article.url);
+        // Extraction is the memory-heavy stage (DOM trees cost ~35× the
+        // HTML in heap), so it runs behind its own small gate: downloads
+        // stay fully parallel, but at most a few pages are parsed at once.
+        const extracted = await extractGate.run(() =>
+          extractFromHtml(res.text, res.finalUrl || article.url)
+        );
         if (extracted) {
           const { quality } = scoreArticleQuality(extracted);
           await setArticleContent(article.id, {

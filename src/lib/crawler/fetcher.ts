@@ -108,7 +108,21 @@ class Semaphore {
     const next = this.queue.shift();
     if (next) next();
   }
+
+  // Run a task while holding a slot. Used to decouple CPU-heavy stages
+  // (DOM parsing) from network parallelism so memory stays bounded while
+  // the radio stays busy.
+  async run<T>(task: () => Promise<T> | T): Promise<T> {
+    await this.acquire();
+    try {
+      return await task();
+    } finally {
+      this.release();
+    }
+  }
 }
+
+export { Semaphore };
 
 // Mercator-style scheduling (Heydon & Najork, 1999): one FIFO queue per host
 // so politeness holds *per server*, while up to `maxParallel` distinct hosts
