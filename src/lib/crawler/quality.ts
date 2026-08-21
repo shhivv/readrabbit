@@ -57,10 +57,12 @@ function words(text: string): string[] {
   return text.toLowerCase().match(/[a-z']+/g) ?? [];
 }
 
-// Long-form depth: generous credit by ~600 words, gentle beyond.
+// Long-form depth: log-scaled so word count keeps differentiating well past
+// the minimum (150w → 0, 600w → 0.5, 6kw+ → 1). Without this every decent
+// post saturates the composite and ranking loses its spread.
 export function depthScore(wordCount: number): number {
   if (wordCount <= 0) return 0;
-  return clamp01(Math.log10(wordCount / 60) / Math.log10(14));
+  return clamp01(Math.log10(wordCount / 150) / Math.log10(40));
 }
 
 // Kohlschütter: running prose sits near 0.35-0.55 stopword share; nav menus,
@@ -162,12 +164,13 @@ export function scoreArticleQuality(article: ExtractedArticle): QualityResult {
   const linkDensity = linkDensityPenalty(article.contentHtml);
 
   const quality = clamp01(
-    0.24 * depth +
-      0.16 * stopwords +
-      0.10 * sentences +
-      0.20 * (1 - caps) +
-      0.08 * (1 - punctuation) +
-      0.14 * (1 - clickbait) +
+    0.06 + // floor so clean short posts stay in the running
+      0.3 * depth +
+      0.14 * stopwords +
+      0.08 * sentences +
+      0.16 * (1 - caps) +
+      0.06 * (1 - punctuation) +
+      0.12 * (1 - clickbait) +
       0.08 * (1 - linkDensity)
   );
 

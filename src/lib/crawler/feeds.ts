@@ -127,7 +127,7 @@ function parseRss(
     });
   }
 
-  return { title: feedTitle, siteUrl: siteLink, entries };
+  return { title: tidyFeedTitle(feedTitle), siteUrl: siteLink, entries };
 }
 
 function parseAtom(
@@ -176,7 +176,7 @@ function parseAtom(
     });
   }
 
-  return { title: feedTitle, siteUrl, entries };
+  return { title: tidyFeedTitle(feedTitle), siteUrl, entries };
 }
 
 function parseRdf(
@@ -201,13 +201,30 @@ function parseRdf(
   }
 
   if (entries.length === 0) return null;
-  return { title: feedTitle, siteUrl: fallbackSiteUrl ?? null, entries };
+  return { title: tidyFeedTitle(feedTitle), siteUrl: fallbackSiteUrl ?? null, entries };
 }
 
 function normalizeEntryUrl(raw: string): string {
   const trimmed = raw.trim();
   if (/^https?:\/\//i.test(trimmed)) return trimmed.split("#")[0];
   return "";
+}
+
+// Feed titles often carry taglines ("Conversable Economist - In Hume's
+// spirit, ..."). Cut the tail at a dash when what remains is still a real
+// name; keeps source labels readable in the reader UI.
+export function tidyFeedTitle(raw: string): string {
+  const title = raw.trim();
+  if (title.length <= 48) return title;
+  const separators = [" — ", " – ", " - ", " :: ", " | "];
+  for (const sep of separators) {
+    const idx = title.indexOf(sep);
+    if (idx >= 12) {
+      const head = title.slice(0, idx).trim();
+      if (head.length >= 12) return head;
+    }
+  }
+  return title.slice(0, 60).replace(/\s\S*$/, "") + "…";
 }
 
 // ---------- fetching + autodiscovery ----------
@@ -260,12 +277,22 @@ const COMMON_FEED_PATHS = [
   "/feeds/posts/default",
 ];
 
+// When the homepage loads but has no <link rel="alternate">, the site is
+// probably not a blog — probing all 12 fallback paths with 8s timeouts is how
+// discovery spent minutes on dead domains. Probe a short list instead.
+const FALLBACK_PATHS_SHORT = COMMON_FEED_PATHS.slice(0, 4);
+
 export async function discoverFeedUrl(siteUrl: string): Promise<string | null> {
+  const deadline = Date.now() + 25_000;
+
+  let homepageOk = false;
   try {
     const res = await fetchText(siteUrl, { timeoutMs: 10000 });
     if (res.ok && res.text) {
+      homepageOk = true;
       const fromLinkTag = extractAlternateLinks(res.text, res.finalUrl);
       for (const candidate of fromLinkTag) {
+        if (Date.now() > deadline) return null;
         if (await probeIsFeed(candidate)) return candidate;
       }
     }
@@ -280,7 +307,9 @@ export async function discoverFeedUrl(siteUrl: string): Promise<string | null> {
     return null;
   }
 
-  for (const path of COMMON_FEED_PATHS) {
+  const paths = homepageOk ? FALLBACK_PATHS_SHORT : COMMON_FEED_PATHS;
+  for (const path of paths) {
+    if (Date.now() > deadline) return null;
     const candidate = `${base.origin}${path}`;
     if (await probeIsFeed(candidate)) return candidate;
   }

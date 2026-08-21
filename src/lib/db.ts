@@ -1,4 +1,5 @@
 import * as SQLite from "expo-sqlite";
+import { rootDomain } from "./crawler/classify";
 
 export type Topic = "technology" | "economics" | "math";
 export const TOPICS: Topic[] = ["technology", "economics", "math"];
@@ -55,7 +56,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -91,6 +92,8 @@ async function migrate(db: SQLite.SQLiteDatabase) {
         avg_update_hours REAL NOT NULL DEFAULT 24,
         next_check_at INTEGER NOT NULL DEFAULT 0,
         etag TEXT,
+        last_modified TEXT,
+        last_fetched_at INTEGER,
         created_at INTEGER NOT NULL
       );
 
@@ -140,6 +143,56 @@ async function migrate(db: SQLite.SQLiteDatabase) {
     version = 1;
   }
 
+  // v2: repair databases created during the broken v1 window whose sources
+  // table is missing bookkeeping columns
+  if (version < 2) {
+    const info = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(sources)"
+    );
+    const present = new Set(info.map((c) => c.name));
+    if (!present.has("last_modified")) {
+      await db.execAsync("ALTER TABLE sources ADD COLUMN last_modified TEXT");
+    }
+    if (!present.has("last_fetched_at")) {
+      await db.execAsync("ALTER TABLE sources ADD COLUMN last_fetched_at INTEGER");
+    }
+  }
+
+  // v3: registrable domain per article. The deque's diversity cap partitions
+  // by author-or-domain, which needs a domain key that groups an author's
+  // multiple feeds (e.g. johndcook.com/blog + applied-math subblog) into one
+  // bucket — source_id can't do that.
+  if (version < 3) {
+    const artInfo = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(articles)"
+    );
+    const present = new Set(artInfo.map((c) => c.name));
+    if (!present.has("site_domain")) {
+      await db.execAsync(
+        "ALTER TABLE articles ADD COLUMN site_domain TEXT NOT NULL DEFAULT ''"
+      );
+      // backfill in one pass over distinct URLs
+      const urls = await db.getAllAsync<{ id: number; url: string }>(
+        "SELECT id, url FROM articles WHERE site_domain = ''"
+      );
+      await db.withTransactionAsync(async () => {
+        for (const row of urls) {
+          let domain = "";
+          try {
+            domain = rootDomain(new URL(row.url).host);
+          } catch {}
+          if (domain) {
+            await db.runAsync("UPDATE articles SET site_domain = ? WHERE id = ?", [
+              domain,
+              row.id,
+            ]);
+          }
+        }
+      });
+    }
+    version = 3;
+  }
+
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);
 }
 
@@ -186,9 +239,17 @@ export async function upsertSource(input: {
   origin: SourceOrigin;
 }): Promise<number> {
   const db = await getDb();
+  // Independent-writer prior: seeded personal blogs outrank HN-mined domains,
+  // which outrank anything else we might pick up along the way.
+  const priorByOrigin: Record<SourceOrigin, number> = {
+    seed: 0.65,
+    outbound: 0.55,
+    hn: 0.5,
+    aggregator: 0.45,
+  };
   await db.runAsync(
-    `INSERT INTO sources (site_url, feed_url, name, topic, origin, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO sources (site_url, feed_url, name, topic, origin, score, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(feed_url) DO UPDATE SET
        name = CASE WHEN excluded.name != '' THEN excluded.name ELSE sources.name END`,
     [
@@ -197,6 +258,7 @@ export async function upsertSource(input: {
       input.name,
       input.topic,
       input.origin,
+      priorByOrigin[input.origin] ?? 0.5,
       Date.now(),
     ]
   );
@@ -338,27 +400,21 @@ export async function upsertArticleMeta(input: {
   topic: string | null;
   score: number;
 }): Promise<number | null> {
+  // Insert-only fast path: one round-trip for new entries (the common case on
+  // first crawl), with `changes` telling us definitively whether the row was
+  // new — the engine relies on that for adaptive feed polling. Backfill of
+  // title/date on known entries costs a second round-trip only on re-crawls.
   const db = await getDb();
-  const existing = await db.getFirstAsync<{ id: number }>(
-    "SELECT id FROM articles WHERE url = ?",
-    [input.url]
-  );
-  if (existing) {
-    await db.runAsync(
-      `UPDATE articles SET
-         title = CASE WHEN title = '' AND ? != '' THEN ? ELSE title END,
-         published_date = COALESCE(published_date, ?)
-       WHERE id = ?`,
-      [input.title, input.title, input.publishedDate, existing.id]
-    );
-    return existing.id;
-  }
-
+  let siteDomain = "";
+  try {
+    siteDomain = rootDomain(new URL(input.url).host);
+  } catch {}
   const result = await db.runAsync(
     `INSERT INTO articles
        (source_id, url, title, author, site_name, published_date, excerpt,
-        topic, fetched_at, score)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        topic, fetched_at, score, site_domain)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(url) DO NOTHING`,
     [
       input.sourceId,
       input.url,
@@ -370,9 +426,19 @@ export async function upsertArticleMeta(input: {
       input.topic,
       Date.now(),
       input.score,
+      siteDomain,
     ]
   );
-  return result.lastInsertRowId;
+  if (result.changes > 0) return result.lastInsertRowId;
+
+  await db.runAsync(
+    `UPDATE articles SET
+       title = CASE WHEN title = '' AND ? != '' THEN ? ELSE title END,
+       published_date = COALESCE(published_date, ?)
+     WHERE url = ?`,
+    [input.title, input.title, input.publishedDate, input.url]
+  );
+  return null;
 }
 
 export async function setArticleContent(

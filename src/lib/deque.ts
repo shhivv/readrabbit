@@ -10,6 +10,19 @@ const MIN_WORDS = 250;
 const WINDOW_SIZE = 60;
 export const LOW_WATER = 12;
 
+// Freshness contract: the reader is a "what's new worth reading" surface.
+// - Hard gate: nothing older than STALE_DAYS enters the stream (the crawl
+//   ingest gate keeps ~90 days of material around, so this rarely binds).
+// - Soft bias: exponential decay with a ~14-day half-life, so last week's
+//   best essay outranks today's mediocre one, but nothing lingers.
+// - Diversity: at most MAX_PER_KEY slots per *author* (falling back to the
+//   site's registrable domain, then source) in any window. Partitioning by
+//   source_id alone lets an author with several feeds — or a multi-author
+//   site with one prolific byline — crowd out everyone else.
+const STALE_DAYS = 120;
+const HALF_LIFE_DAYS = 14;
+const MAX_PER_KEY = 3;
+
 export interface DequeState {
   ids: number[];
 }
@@ -17,13 +30,27 @@ export interface DequeState {
 function weightedSampleQuery(limit: number): string {
   const ageDays =
     `(strftime('%s','now') * 1000 - COALESCE(published_date, fetched_at)) / 86400000.0`;
-  const recency = `(1.0 / (1.0 + MAX(${ageDays}, -30) / 7.0))`;
+  const recency = `POWER(0.5, MAX(${ageDays}, -30) / ${HALF_LIFE_DAYS}.0)`;
   // ABS(RANDOM()) mapped to (0,1]
   const uniform = `((ABS(RANDOM()) % 1000000) + 1) / 1000001.0`;
+  const key = `(MAX(quality, 0.05) * ${recency} * ${uniform})`;
+  const diversityKey = `COALESCE(NULLIF(LOWER(TRIM(author)), ''), NULLIF(site_domain, ''), 's' || source_id)`;
   return `
-    SELECT id FROM articles
-    WHERE is_archived = 0 AND is_read = 0 AND word_count >= ${MIN_WORDS}
-    ORDER BY (MAX(quality, 0.05) * ${recency} * ${uniform}) DESC
+    SELECT id FROM (
+      SELECT id,
+             ${key} AS key,
+             ROW_NUMBER() OVER (
+               PARTITION BY ${diversityKey}
+               ORDER BY ${key} DESC
+             ) AS rank_in_source
+      FROM articles
+      WHERE is_archived = 0 AND is_read = 0
+        AND word_count >= ${MIN_WORDS}
+        AND COALESCE(published_date, fetched_at)
+              > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
+    )
+    WHERE rank_in_source <= ${MAX_PER_KEY}
+    ORDER BY key DESC
     LIMIT ${limit}`;
 }
 

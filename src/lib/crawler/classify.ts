@@ -8,16 +8,24 @@ const BLOCKED_DOMAINS = new Set([
   "cnn.com", "foxnews.com", "msnbc.com", "nbcnews.com", "cbsnews.com",
   "abcnews.go.com", "apnews.com", "reuters.com", "bbc.co.uk", "bbc.com",
   "aljazeera.com", "time.com", "newsweek.com", "usatoday.com",
+  "theatlantic.com", "newyorker.com", "politico.com", "axios.com",
+  "slate.com", "salon.com", "thedailybeast.com", "dailybeast.com",
+  "nypost.com", "dailymail.co.uk", "thesun.co.uk", "mirror.co.uk",
+  "latimes.com", "chicagotribune.com", "sfchronicle.com", "bostonglobe.com",
+  "seattletimes.com", "npr.org", "pbs.org", "dw.com", "france24.com",
+  "abc.net.au", "cbc.ca", "yahoo.com", "msn.com", "news.yahoo.com",
   // tech media
   "wired.com", "arstechnica.com", "theverge.com", "techcrunch.com",
   "engadget.com", "gizmodo.com", "mashable.com", "lifehacker.com",
   "cnet.com", "zdnet.com", "pcworld.com", "macrumors.com", "9to5mac.com",
   "tomshardware.com", "anandtech.com", "theinformation.com",
-  "semianalysis.substack.com",
+  "semianalysis.substack.com", "slashdot.org", "theregister.com",
+  "venturebeat.com", "readwrite.com", "thenextweb.com", "sifted.eu",
   // business / finance media
-  "forbes.com", "businessinsider.com", "cnbc.com", "fortune.com",
-  "inc.com", "fastcompany.com", "hbr.org", "marketwatch.com",
-  "investopedia.com", "barrons.com",
+  "forbes.com", "businessinsider.com", "insider.com", "cnbc.com",
+  "fortune.com", "inc.com", "fastcompany.com", "hbr.org",
+  "marketwatch.com", "investopedia.com", "barrons.com", "benzinga.com",
+  "seekingalpha.com", "fool.com", "zerohedge.com",
   // content farms & platforms
   "buzzfeed.com", "huffpost.com", "vox.com", "medium.com", "hackernoon.com",
   "dev.to", "freecodecamp.org", "towardsdatascience.com", "betterprogramming.pub",
@@ -31,9 +39,34 @@ const BLOCKED_DOMAINS = new Set([
   "meta.com", "netflixtechblog.com", "eng.uber.com", "netflix.com",
   "amazon.com", "dropbox.tech", "discord.com", "slack.com",
   "engineering.fb.com", "aws.amazon.com", "azure.microsoft.com",
+  // corporate dev portals & docs
+  "developer.mozilla.org", "learn.microsoft.com", "docs.oracle.com",
+  "developer.apple.com", "developer.android.com", "code.visualstudio.com",
+  // aggregators & link farms — never sources
+  "news.ycombinator.com", "hnrss.org", "hn.algolia.com",
+  "techmeme.com", "mediagazer.com", "memex.marginalia.nu",
+  "lobste.rs", "tildes.net", "kagi.com",
+  // share widgets & embed services that masquerade as sites
+  // NOTE: never add platform roots here (substack.com, wordpress.com,
+  // github.io) — rootDomain() collapses personal blogs on those platforms
+  // onto the root, which would block every independent writer on it.
+  // Block specific publications by full host instead.
+  "addtoany.com", "addthis.com", "sharethis.com", "disqus.com",
+  "buffer.com", "hootsuite.com", "paper.li", "scoop.it", "bloglovin.com",
+  "feedburner.com", "feedspot.com", "flipboard.com",
+  "buttondown.email", "mailchimp.com", "mailchi.mp", "sendfox.com",
+  "gravatar.com", "patreon.com", "ko-fi.com",
+  "gumroad.com", "buymeacoffee.com",
+  // corporate SaaS / vendor blogs that outbound links keep surfacing
+  "akismet.com", "surveymonkey.com", "typepad.com", "huggingface.co",
+  "libertyfund.org", "cloudflare.com", "automattic.com", "jetpack.com",
+  "tenable.com", "atlassian.com", "sentry.io", "datadoghq.com",
+  // institutional research / advocacy publications (not independent writers)
+  "cepr.org", "voxeu.org", "ourworldindata.org", "quillette.com",
+  "nber.org", "ssrn.com", "scholar.google.com",
 ]);
 
-const BLOCKED_TLDS = new Set([".gov", ".mil"]);
+const BLOCKED_TLDS = new Set([".gov", ".mil", ".edu", ".ac.uk"]);
 
 // Two-part public suffixes we bother about (minimal set)
 const TWO_PART_SUFFIXES = new Set([

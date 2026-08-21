@@ -14,7 +14,6 @@ SplashScreen.preventAutoHideAsync();
 export default function RootLayout() {
   const [fontsLoaded] = useFonts(allFonts());
   const [ready, setReady] = useState(false);
-  const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const router = useRouter();
   const segments = useSegments();
 
@@ -23,25 +22,39 @@ export default function RootLayout() {
     (async () => {
       try {
         await getDb();
-        const flag = await kvGet("onboarded");
-        setOnboarded(flag === "1");
       } catch {
-        setOnboarded(false);
+        // db failures surface later per-screen; don't brick the shell
       }
       SplashScreen.hideAsync().catch(() => {});
       setReady(true);
     })();
   }, [fontsLoaded]);
 
+  // Gate on the persisted flag, re-read on every route change — never on
+  // cached state, or onboarding's own transition gets bounced back.
   useEffect(() => {
-    if (!ready || onboarded == null) return;
-    const inOnboarding = segments[0] === "onboarding";
-    if (!onboarded && !inOnboarding) {
-      router.replace("/onboarding");
-    } else if (onboarded && inOnboarding) {
-      router.replace("/");
-    }
-  }, [ready, onboarded, segments, router]);
+    if (!ready) return;
+    let cancelled = false;
+    (async () => {
+      let isOnboarded = false;
+      try {
+        const flag = await kvGet("onboarded");
+        isOnboarded = flag === "1";
+      } catch {
+        isOnboarded = false;
+      }
+      if (cancelled) return;
+      const inOnboarding = segments[0] === "onboarding";
+      if (!isOnboarded && !inOnboarding) {
+        router.replace("/onboarding");
+      } else if (isOnboarded && inOnboarding) {
+        router.replace("/");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, segments, router]);
 
   if (!ready || !fontsLoaded) {
     return (

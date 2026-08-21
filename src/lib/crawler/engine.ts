@@ -10,9 +10,16 @@ import {
   upsertArticleMeta,
   type ArticleRow,
 } from "../db";
-import { fetchText, Semaphore } from "./fetcher";
+import { fetchText, getHost, HostScheduler } from "./fetcher";
 import { fetchFeed } from "./feeds";
-import { collectOutboundLinks, enqueueCandidates, hnDiscover, probeTopCandidates } from "./discover";
+import {
+  collectOutboundLinks,
+  enqueueCandidates,
+  flushCandidates,
+  hnDiscover,
+  loadCandidates,
+  probeTopCandidates,
+} from "./discover";
 import { extractFromHtml } from "./extract";
 import { scoreArticleQuality } from "./quality";
 import { pruneStorage } from "../prune";
@@ -39,7 +46,7 @@ const BUDGET_MS: Record<CrawlMode, number> = {
 };
 
 const ENRICH_BATCH: Record<CrawlMode, number> = {
-  initial: 80,
+  initial: 120,
   foreground: 20,
   background: 15,
 };
@@ -49,6 +56,11 @@ const DISCOVER_PROBES: Record<CrawlMode, number> = {
   foreground: 6,
   background: 6,
 };
+
+// Freshness contract at ingest: entries older than this never enter the DB.
+// Archive-heavy feeds otherwise flood storage and enrichment budget with
+// years-old posts the reader would never show anyway.
+const MAX_INGEST_AGE_DAYS = 90;
 
 const LOCK_KEY = "engine_lock";
 const LOCK_STALE_MS = 15 * 60 * 1000;
@@ -94,19 +106,27 @@ export async function runCrawl(options: CrawlOptions): Promise<boolean> {
 
 async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
   const deadline = Date.now() + BUDGET_MS[mode];
-  // TailEnder batching: keep transfers back-to-back within a burst. The
-  // politeness delay in fetcher.ts spaces same-host requests without letting
-  // the radio drop to idle between items.
-  const network = new Semaphore(mode === "initial" ? 3 : 2);
+  // Mercator-style per-host queues with cross-host parallelism: TailEnder's
+  // batching insight (keep the radio busy with back-to-back transfers) plus
+  // Mercator's insight (politeness is a per-host property). 8 hosts in flight
+  // keeps a burst tight while no single server sees more than ~1 req/1.2s.
+  const network = new HostScheduler(mode === "initial" ? 8 : 6);
+
+  // candidate pool lives in memory for the whole crawl; flushed at phase ends
+  await loadCandidates();
 
   await updateFeeds(network, deadline, mode, onProgress);
+  await flushCandidates();
   if (Date.now() < deadline) {
     await enrichArticles(network, deadline, ENRICH_BATCH[mode], onProgress);
+    await flushCandidates();
   }
   if (Date.now() < deadline && mode !== "foreground") {
     onProgress?.({ phase: "discover", done: 0, total: DISCOVER_PROBES[mode] });
     await hnDiscover();
+    await flushCandidates();
     await probeTopCandidates(DISCOVER_PROBES[mode]);
+    await flushCandidates();
   }
   if (mode !== "initial") {
     // keep first-open snappy; prune on every subsequent cycle
@@ -118,7 +138,7 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
 // ---------- phase 1: feeds ----------
 
 async function updateFeeds(
-  network: Semaphore,
+  network: HostScheduler,
   deadline: number,
   _mode: CrawlMode,
   onProgress?: (progress: CrawlProgress) => void
@@ -127,11 +147,17 @@ async function updateFeeds(
   onProgress?.({ phase: "feeds", done: 0, total: sources.length });
 
   let done = 0;
-  for (const source of sources) {
-    if (Date.now() > deadline) break;
+  const tick = () => {
+    done++;
+    onProgress?.({ phase: "feeds", done, total: sources.length });
+  };
 
-    try {
-      const res = await network.run(() =>
+  await runPool(sources, network.parallelism, (source) =>
+    (async () => {
+      if (Date.now() > deadline) return;
+
+      try {
+      const res = await network.run(source.feed_url, () =>
         fetchFeed({
           feed_url: source.feed_url,
           etag: source.etag,
@@ -140,57 +166,98 @@ async function updateFeeds(
       );
 
       if (res.notModified) {
-        await recordSourceSuccess(source.id, res.etag, res.lastModified, 0);
-        done++;
-        onProgress?.({ phase: "feeds", done, total: sources.length });
-        continue;
+        await safeRecord(() =>
+          recordSourceSuccess(source.id, res.etag, res.lastModified, 0)
+        );
+        tick();
+        return;
       }
 
       if (!res.feed || res.feed.entries.length === 0) {
-        await recordSourceFailure(source.id);
-        done++;
-        continue;
+        await safeRecord(() => recordSourceFailure(source.id));
+        tick();
+        return;
       }
 
+      const db = await getDb();
+      const ingestCutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
       let newEntries = 0;
-      for (const entry of res.feed.entries.slice(0, 30)) {
-        const inserted = await upsertArticleMeta({
-          sourceId: source.id,
-          url: entry.url,
-          title: entry.title,
-          author: entry.author,
-          siteName: res.feed.title || source.name,
-          publishedDate: entry.publishedAt,
-          excerpt: firstParagraphText(entry.summaryHtml),
-          topic: source.topic,
-          score: source.score,
-        });
-        if (inserted != null) newEntries++;
+      const linkBatch: Array<{ url: string; topicHint: import("../db").Topic }> = [];
 
-        // free link mining from feed content — no extra page fetches
-        if (entry.summaryHtml.length > 200) {
-          await enqueueCandidates(
-            collectOutboundLinks(entry.summaryHtml, entry.url),
-            "outbound"
-          );
+      // One transaction per source: on flash storage every implicit
+      // transaction is an fsync, so 30 individual inserts would mean 30
+      // syncs; batched they cost one.
+      await db.withTransactionAsync(async () => {
+        for (const entry of res.feed!.entries.slice(0, 30)) {
+          if (
+            entry.publishedAt != null &&
+            entry.publishedAt < ingestCutoff
+          ) {
+            continue; // stale: never enters the DB
+          }
+          const inserted = await upsertArticleMeta({
+            sourceId: source.id,
+            url: entry.url,
+            title: entry.title,
+            author: entry.author,
+            siteName: res.feed!.title || source.name,
+            publishedDate: entry.publishedAt,
+            excerpt: firstParagraphText(entry.summaryHtml),
+            topic: source.topic,
+            score: source.score,
+          });
+          if (inserted != null) newEntries++;
+
+          // free link mining from feed content — no extra page fetches
+          if (entry.summaryHtml.length > 200) {
+            linkBatch.push(
+              ...collectOutboundLinks(entry.summaryHtml, entry.url)
+            );
+          }
         }
+      });
+      enqueueCandidates(linkBatch, "outbound");
+
+      await safeRecord(() =>
+        recordSourceSuccess(source.id, res.etag, res.lastModified, newEntries)
+      );
+      } catch {
+        await safeRecord(() => recordSourceFailure(source.id));
       }
 
-      await recordSourceSuccess(
-        source.id,
-        res.etag,
-        res.lastModified,
-        newEntries
-      );
-    } catch {
-      await recordSourceFailure(source.id);
-    }
+      tick();
+      // yield between items so the JS thread stays responsive
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    })()
+  );
+}
 
-    done++;
-    onProgress?.({ phase: "feeds", done, total: sources.length });
-    // yield to the JS thread / UI every item
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+// Bookkeeping must never take down a crawl phase (a schema hiccup or disk
+// glitch should degrade to lost bookkeeping, not a dead loop).
+async function safeRecord(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch {}
+}
+
+// Fixed worker pool over a shared cursor — this is what actually puts N
+// requests in flight; the HostScheduler then only arbitrates host politeness.
+async function runPool<T>(
+  items: T[],
+  workers: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  const n = Math.min(workers, items.length);
+  await Promise.all(
+    Array.from({ length: n }, async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= items.length) return;
+        await fn(items[i]);
+      }
+    })
+  );
 }
 
 function firstParagraphText(summaryHtml: string): string {
@@ -207,37 +274,68 @@ function firstParagraphText(summaryHtml: string): string {
 // ---------- phase 2: enrichment ----------
 
 async function enrichArticles(
-  network: Semaphore,
+  network: HostScheduler,
   deadline: number,
   batch: number,
   onProgress?: (progress: CrawlProgress) => void
 ): Promise<void> {
   const db = await getDb();
-  const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
 
   const candidates = await db.getAllAsync<ArticleRow>(
     `SELECT id, url, title, score, fetched_at FROM articles
      WHERE word_count = 0 AND content_html = ''
        AND fetched_at > ?
+       AND (published_date IS NULL OR published_date > ?)
      ORDER BY score DESC, fetched_at DESC
      LIMIT ?`,
-    [cutoff, batch]
+    [cutoff, cutoff, batch]
   );
   if (candidates.length === 0) return;
 
-  onProgress?.({ phase: "enrich", done: 0, total: candidates.length });
+  // Interleave hosts before pooling: score-ordered candidates cluster
+  // same-host articles together, and per-host politeness then serializes a
+  // worker chain (1.2s × N). Round-robin by host keeps every worker on a
+  // different server.
+  const byHost = new Map<string, ArticleRow[]>();
+  for (const article of candidates) {
+    const host = getHost(article.url) ?? "unknown";
+    const list = byHost.get(host);
+    if (list) list.push(article);
+    else byHost.set(host, [article]);
+  }
+  const interleaved: ArticleRow[] = [];
+  let added = true;
+  while (added) {
+    added = false;
+    for (const list of byHost.values()) {
+      const next = list.shift();
+      if (next) {
+        interleaved.push(next);
+        added = true;
+      }
+    }
+  }
+
+  onProgress?.({ phase: "enrich", done: 0, total: interleaved.length });
 
   let done = 0;
-  for (const article of candidates) {
-    if (Date.now() > deadline) break;
+  const tick = () => {
+    done++;
+    onProgress?.({ phase: "enrich", done, total: interleaved.length });
+  };
 
-    try {
-      const res = await network.run(() =>
+  await runPool(interleaved, network.parallelism, (article) =>
+    (async () => {
+      if (Date.now() > deadline) return;
+
+      try {
+      const res = await network.run(article.url, () =>
         fetchText(article.url, { timeoutMs: 15000 })
       );
       if (res.ok && res.text) {
         // mine outbound links from the full page before extraction trims it
-        await enqueueCandidates(
+        enqueueCandidates(
           collectOutboundLinks(res.text.slice(0, 500_000), article.url),
           "outbound"
         );
@@ -265,12 +363,12 @@ async function enrichArticles(
         await markArticleFailed(article.id); // gone is gone
       }
       // transient server errors: leave word_count=0 to retry next run
-    } catch {
-      // leave for retry
-    }
+      } catch {
+        // transient: leave word_count=0 to retry next run
+      }
 
-    done++;
-    onProgress?.({ phase: "enrich", done, total: candidates.length });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+      tick();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    })()
+  );
 }

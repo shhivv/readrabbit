@@ -106,14 +106,13 @@ export function extractFromHtml(html: string, url: string): ExtractedArticle | n
     const prepared = convertMathScripts(html);
     const { document } = parseHTML(prepared);
 
-    // metadata before readability mutates the tree
+    // metadata first — Readability then reuses and mutates this same tree,
+    // saving a full second DOM construction per article (measurable on phones)
     const meta = extractMetadata(document, url);
 
     let extracted: ReturnType<Readability["parse"]> = null;
     try {
-      // Readability mutates its own clone internally; give it a fresh parse
-      const { document: readableDoc } = parseHTML(prepared);
-      const reader = new Readability(readableDoc as unknown as globalThis.Document);
+      const reader = new Readability(document as unknown as globalThis.Document);
       extracted = reader.parse() as ReturnType<Readability["parse"]>;
     } catch {
       extracted = null;

@@ -3,7 +3,7 @@ import {
   looksLikeArticlePath,
 } from "./classify";
 import { discoverFeedUrl, parseFeed } from "./feeds";
-import { fetchText } from "./fetcher";
+import { fetchText, getHost, HostScheduler } from "./fetcher";
 import { getDb, upsertSource } from "../db";
 import type { Topic } from "../db";
 import { kvGetJson, kvSetJson } from "../db";
@@ -27,12 +27,24 @@ const CANDIDATES_KEY = "disco:candidates";
 const REJECTED_KEY = "disco:rejected";
 const HN_LAST_KEY = "disco:hn_last_at";
 
+// The pool lives in memory during a crawl and is persisted only at phase
+// boundaries (flushCandidates). The old write-through version re-serialized
+// the entire JSON blob per link batch — hundreds of kv round-trips per crawl.
+let poolCache: CandidatePool | null = null;
+let poolDirty = false;
+
 export async function loadCandidates(): Promise<CandidatePool> {
-  return (await kvGetJson<CandidatePool>(CANDIDATES_KEY)) ?? {};
+  if (!poolCache) {
+    poolCache = (await kvGetJson<CandidatePool>(CANDIDATES_KEY)) ?? {};
+  }
+  return poolCache;
 }
 
-async function saveCandidates(pool: CandidatePool): Promise<void> {
-  await kvSetJson(CANDIDATES_KEY, pool);
+export async function flushCandidates(): Promise<void> {
+  if (poolCache && poolDirty) {
+    await kvSetJson(CANDIDATES_KEY, poolCache);
+    poolDirty = false;
+  }
 }
 
 function normalizeCandidateUrl(url: string): {
@@ -89,21 +101,21 @@ export function collectOutboundLinks(
   }
 }
 
-export async function enqueueCandidates(
+export function enqueueCandidates(
   links: Array<{ url: string; topicHint?: Topic }>,
   origin: "outbound" | "hn"
-): Promise<number> {
-  const pool = await loadCandidates();
+): void {
+  if (!links.length || !poolCache) return;
   let added = 0;
   for (const link of links.slice(0, 30)) {
     const normalized = normalizeCandidateUrl(link.url);
     if (!normalized) continue;
-    const existing = pool[normalized.domain];
+    const existing = poolCache[normalized.domain];
     if (existing) {
       existing.count += 1;
       continue;
     }
-    pool[normalized.domain] = {
+    poolCache[normalized.domain] = {
       sampleUrl: link.url,
       siteUrl: normalized.siteUrl,
       count: 1,
@@ -115,14 +127,12 @@ export async function enqueueCandidates(
   }
 
   // cap pool size: drop oldest beyond 400
-  const entries = Object.entries(pool);
+  const entries = Object.entries(poolCache);
   if (entries.length > 400) {
     entries.sort((a, b) => b[1].count - a[1].count || b[1].addedAt - a[1].addedAt);
-    await saveCandidates(Object.fromEntries(entries.slice(0, 400)));
-  } else {
-    await saveCandidates(pool);
+    poolCache = Object.fromEntries(entries.slice(0, 400));
   }
-  return added;
+  if (added > 0) poolDirty = true;
 }
 
 export async function hnDiscover(): Promise<number> {
@@ -137,11 +147,19 @@ export async function hnDiscover(): Promise<number> {
     const data = JSON.parse(res.text) as {
       hits?: Array<{ url?: string | null; title?: string }>;
     };
+    // Self-posts link back to HN itself; they'd otherwise enter discovery
+    // as "news.ycombinator.com" and pollute the candidate pool.
     const links = (data.hits ?? [])
       .filter((hit) => hit.url && hit.title)
-      .map((hit) => ({ url: hit.url as string }));
+      .map((hit) => ({ url: hit.url as string }))
+      .filter((link) => {
+        const host = getHost(link.url);
+        return host != null && !host.endsWith("news.ycombinator.com") && !host.endsWith("hnrss.org");
+      });
     await kvSetJson(HN_LAST_KEY, Date.now());
-    return enqueueCandidates(links, "hn");
+    const before = Object.keys(await loadCandidates()).length;
+    enqueueCandidates(links, "hn");
+    return Object.keys(poolCache ?? {}).length - before;
   } catch {
     return 0;
   }
@@ -152,25 +170,43 @@ export interface ProbeResult {
   outcome: "added" | "known" | "blocked" | "no-feed" | "error";
 }
 
+// Feed titles that indicate an institutional/infra feed rather than a
+// personal blog worth reading: podcast indexes, changelogs, link archives,
+// corporate newsrooms.
+const NON_BLOG_TITLE = /podcast|archive|changelog|release notes|recent additions|\bnews\b|status|jobs|roadmap|press release/i;
+
+function isNonBlogFeedTitle(title: string): boolean {
+  return NON_BLOG_TITLE.test(title);
+}
+
+// Probing one candidate = homepage fetch + feed autodiscovery + feed fetch,
+// all serial *within* the candidate's host (politeness) but fully parallel
+// *across* candidates. Sequential probing was the single largest cost of the
+// initial crawl (~150s for 24 candidates on desktop; phones are worse).
 export async function probeTopCandidates(limit: number): Promise<ProbeResult[]> {
   const pool = await loadCandidates();
   const rejected = (await kvGetJson<Record<string, number>>(REJECTED_KEY)) ?? {};
 
   const ranked = Object.entries(pool)
     .filter(([domain]) => rejected[domain] == null)
+    // outbound candidates need ≥2 independent citations: single-link
+    // accidents are how share widgets and vendor pages got in before.
+    .filter(([, c]) => c.origin === "hn" || c.count >= 2)
     .sort((a, b) => b[1].count - a[1].count);
 
-  const results: ProbeResult[] = [];
   const db = await getDb();
+  const results: ProbeResult[] = [];
+  const network = new HostScheduler(6);
+  let cursor = 0;
 
-  for (const [domain, candidate] of ranked) {
-    if (results.length >= limit) break;
-
+  const probeOne = async (
+    domain: string,
+    candidate: CandidatePool[string]
+  ): Promise<ProbeResult> => {
     const classification = classifyDomain(domain);
     if (!classification.allowed) {
       rejected[domain] = Date.now();
-      results.push({ domain, outcome: "blocked" });
-      continue;
+      return { domain, outcome: "blocked" };
     }
 
     const known = await db.getFirstAsync(
@@ -179,43 +215,64 @@ export async function probeTopCandidates(limit: number): Promise<ProbeResult[]> 
     );
     if (known) {
       delete pool[domain]; // already have it; stop tracking
-      results.push({ domain, outcome: "known" });
-      continue;
+      poolDirty = true;
+      return { domain, outcome: "known" };
     }
 
-    const feedUrl = await discoverFeedUrl(candidate.siteUrl.startsWith("http") ? candidate.siteUrl : `https://${candidate.siteUrl}`);
+    const siteUrl = candidate.siteUrl.startsWith("http")
+      ? candidate.siteUrl
+      : `https://${candidate.siteUrl}`;
+    const feedUrl = await network.run(siteUrl, () => discoverFeedUrl(siteUrl));
     if (!feedUrl) {
       rejected[domain] = Date.now();
-      results.push({ domain, outcome: "no-feed" });
-      continue;
+      return { domain, outcome: "no-feed" };
     }
 
     try {
-      const res = await fetchText(feedUrl, { timeoutMs: 10000 });
-      const feed = res.ok ? parseFeed(res.text, candidate.siteUrl) : null;
+      const res = await network.run(feedUrl, () =>
+        fetchText(feedUrl, { timeoutMs: 10000 })
+      );
+      const feed = res.ok ? parseFeed(res.text, siteUrl) : null;
       if (!feed || feed.entries.length < 2) {
         rejected[domain] = Date.now();
-        results.push({ domain, outcome: "no-feed" });
-        continue;
+        return { domain, outcome: "no-feed" };
+      }
+      if (isNonBlogFeedTitle(feed.title)) {
+        // archive pages, changelogs, podcast indexes — real feeds, wrong
+        // genre for a reading app
+        rejected[domain] = Date.now();
+        return { domain, outcome: "blocked" };
       }
 
       await upsertSource({
-        siteUrl: candidate.siteUrl.startsWith("http")
-          ? candidate.siteUrl
-          : `https://${candidate.siteUrl}`,
+        siteUrl,
         feedUrl,
         name: feed.title || domain,
         topic: candidate.topic,
         origin: candidate.origin,
       });
       delete pool[domain];
-      results.push({ domain, outcome: "added" });
+      poolDirty = true;
+      return { domain, outcome: "added" };
     } catch {
-      results.push({ domain, outcome: "error" });
+      return { domain, outcome: "error" };
     }
-  }
+  };
 
-  await saveCandidates(pool);
+  const workers = Array.from({ length: Math.min(network.parallelism, ranked.length) }, async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= ranked.length || results.length >= limit) return;
+      const [domain, candidate] = ranked[i];
+      const result = await probeOne(domain, candidate);
+      // `added`/`blocked`/`no-feed` consume a probe slot; `error` doesn't so a
+      // flaky host can't starve discovery this run.
+      if (result.outcome !== "error") results.push(result);
+    }
+  });
+
+  await Promise.all(workers);
+  await flushCandidates();
   await kvSetJson(REJECTED_KEY, rejected);
   return results;
 }
