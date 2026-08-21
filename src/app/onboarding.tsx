@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   StyleSheet,
   Text,
@@ -19,7 +19,7 @@ import Animated, {
 import { useRouter } from "expo-router";
 import { colors, fonts, spacing } from "@/lib/theme";
 import { TOPICS, seedCatalogSources, getDb, kvSet, type Topic } from "@/lib/db";
-import { runCrawl, type CrawlProgress } from "@/lib/crawler/engine";
+import { runCrawl } from "@/lib/crawler/engine";
 import { registerBackgroundCrawl } from "@/lib/background";
 
 const SPRING = { damping: 18, stiffness: 260 };
@@ -45,9 +45,7 @@ const TOPIC_META: Array<{ id: Topic; label: string; blurb: string }> = [
 export default function OnboardingScreen() {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<Topic>>(new Set());
-  const [phase, setPhase] = useState<"pick" | "crawling" | "ready">("pick");
-  const progressRef = useRef<CrawlProgress | null>(null);
-  const [progressTick, setProgressTick] = useState(0);
+  const [phase, setPhase] = useState<"pick" | "starting">("pick");
 
   const canBegin = selected.size > 0;
 
@@ -61,25 +59,26 @@ export default function OnboardingScreen() {
   }
 
   async function begin() {
-    setPhase("crawling");
+    setPhase("starting");
     await seedCatalogSources([...selected]);
     await kvSet("onboarded", "1");
     registerBackgroundCrawl().catch(() => {});
 
-    await runCrawl({
-      mode: "initial",
-      onProgress: (p) => {
-        progressRef.current = p;
-        setProgressTick((t) => t + 1);
-      },
-    });
+    // entirely behind the scenes: the reader opens now and fills itself
+    // from the database as enrichment lands
+    runCrawl({ mode: "initial" }).catch(() => {});
 
-    setPhase("ready");
-    setTimeout(() => router.replace("/"), 600);
+    router.replace("/");
   }
 
   if (phase !== "pick") {
-    return <CrawlingView phase={phase} progress={progressRef.current} tick={progressTick} />;
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={[styles.content, { justifyContent: "center", alignItems: "center" }]}>
+          <ActivityIndicator color={colors.accent} />
+        </View>
+      </SafeAreaView>
+    );
   }
 
   return (
@@ -183,49 +182,6 @@ function BeginButton({ enabled, onPress }: { enabled: boolean; onPress: () => vo
         <Text style={styles.beginLabel}>start exploring</Text>
       </Pressable>
     </Animated.View>
-  );
-}
-
-const PHASE_COPY: Record<string, string> = {
-  feeds: "finding blogs worth reading…",
-  enrich: "pulling full posts and cleaning them up…",
-  discover: "following trails to new writers…",
-  done: "your shelf is ready",
-};
-
-function CrawlingView({
-  phase,
-  progress,
-  tick,
-}: {
-  phase: "crawling" | "ready";
-  progress: CrawlProgress | null;
-  tick: number;
-}) {
-  const copy = PHASE_COPY[progress?.phase ?? "feeds"] ?? PHASE_COPY.feeds;
-  const ratio =
-    progress && progress.total > 0 ? progress.done / progress.total : 0;
-
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.crawlContent}>
-        <ActivityIndicator color={colors.accent} style={{ marginBottom: spacing.lg }} />
-        <Text style={styles.crawlTitle}>{phase === "ready" ? "done" : copy}</Text>
-        <View style={styles.progressTrack}>
-          <Animated.View
-            key={`bar-${tick}`}
-            style={[styles.progressFill, { width: `${Math.max(ratio * 100, 4)}%` }]}
-          />
-        </View>
-        {progress ? (
-          <Text style={styles.crawlMeta}>
-            {progress.phase === "enrich"
-              ? `${progress.done} of ${progress.total} posts`
-              : `${progress.done} / ${progress.total}`}
-          </Text>
-        ) : null}
-      </View>
-    </SafeAreaView>
   );
 }
 

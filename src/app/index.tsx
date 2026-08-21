@@ -663,7 +663,7 @@ export default function ReaderScreen() {
 
       if (ids.length === 0) {
         setLoading(false);
-        setStarving(true);
+        setStarving(true); // poll loop picks up as the crawl lands posts
         return;
       }
 
@@ -682,6 +682,41 @@ export default function ReaderScreen() {
       setLoading(false);
     })();
   }, [showArticle, prefetchAround]);
+
+  // starving: nothing readable yet (first run or drained) — poll until the
+  // background crawl lands enriched posts in the database
+  useEffect(() => {
+    if (!starving || loading) return;
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        const ids = await loadDeque();
+        if (cancelled) return;
+        if (ids.length > 0) {
+          dequeRef.current = ids;
+          setDequeIds(ids);
+          currentIndexRef.current = 0;
+          setCurrentIndex(0);
+          const first = await hydrate(ids[0]);
+          if (!cancelled && first) {
+            showArticle(first);
+            prefetchAround(ids, 0);
+            setStarving(false);
+          }
+        }
+      } catch {
+        // keep polling
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [starving, loading, showArticle, prefetchAround]);
 
   const pendingReveal = useRef<"instant" | "fade">("instant");
 
@@ -852,7 +887,7 @@ export default function ReaderScreen() {
             <ActivityIndicator color={colors.accent} />
             <Text style={styles.emptyTitle}>gathering good posts…</Text>
             <Text style={styles.emptySubtitle}>
-              your phone is out crawling blogs right now
+              your phone is out crawling blogs — this fills in on its own
             </Text>
           </Animated.View>
         </View>
