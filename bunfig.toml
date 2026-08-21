@@ -1,0 +1,5 @@
+# Expo SDK 57 is freshly released; patch versions ship faster than the
+# global minimumReleaseAge policy allows. Scoped to this repo only —
+# the global ~/.bunfig.toml policy still applies everywhere else.
+[install]
+minimumReleaseAge = 0
