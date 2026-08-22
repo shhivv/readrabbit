@@ -597,6 +597,15 @@ export async function setBookmarked(
   ]);
 }
 
+export async function getBookmarkedArticles(): Promise<
+  Pick<ArticleRow, "id" | "title" | "site_name" | "url">[]
+> {
+  const db = await getDb();
+  return db.getAllAsync(
+    "SELECT id, title, site_name, url FROM articles WHERE is_bookmarked = 1 ORDER BY read_at DESC"
+  );
+}
+
 // ---------- interests ----------
 
 export async function getInterestIndices(

@@ -66,9 +66,8 @@ export function TopicCard({
 
   const cardStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
-    borderColor: border.value > 0.5 ? colors.text : colors.border,
     backgroundColor:
-      border.value > 0.5 ? "rgba(255, 255, 255, 0.05)" : colors.bgRaised,
+      border.value > 0.5 ? "rgba(255, 255, 255, 0.08)" : colors.bgRaised,
   }));
 
   return (
@@ -96,20 +95,19 @@ export function TopicCard({
 
 const styles = StyleSheet.create({
   primaryBtn: {
-    backgroundColor: colors.text,
-    borderRadius: 12,
-    paddingVertical: 15,
+    backgroundColor: colors.bgRaised,
+    borderRadius: 14,
+    paddingVertical: 16,
     alignItems: "center",
   },
   btnDisabled: {},
   primaryLabel: {
     fontFamily: fonts.sansBold,
     fontSize: 15,
-    color: "#111111",
+    color: colors.text,
     letterSpacing: 0.3,
   },
   topicCard: {
-    borderWidth: 1.5,
     borderRadius: 14,
     paddingVertical: 16,
     paddingHorizontal: 18,

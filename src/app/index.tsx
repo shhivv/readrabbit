@@ -1031,9 +1031,9 @@ async function setArticleBookmark(articleId: number, next: boolean): Promise<voi
 
 const FAB_SIZE = 40;
 const FAB_ITEMS = [
-  { key: "settings", label: "settings" },
-  { key: "share", label: "share" },
-  { key: "bookmark", label: "bookmark" },
+  { key: "settings", label: "Settings" },
+  { key: "share", label: "Share" },
+  { key: "bookmark", label: "Bookmark" },
 ];
 const FAB_ITEM_HEIGHT = 44;
 
@@ -1113,7 +1113,7 @@ function FloatingActions({
           <FabOption
             key={item.key}
             label={
-              item.key === "bookmark" && bookmarked ? "bookmarked" : item.label
+              item.key === "bookmark" && bookmarked ? "Bookmarked" : item.label
             }
             index={i}
             total={FAB_ITEMS.length}

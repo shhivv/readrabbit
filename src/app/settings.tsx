@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { StyleSheet, Text, View, Pressable, Linking } from "react-native";
+import { StyleSheet, Text, View, Pressable, Linking, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Animated, { FadeIn } from "react-native-reanimated";
 import { useRouter } from "expo-router";
@@ -11,7 +11,9 @@ import {
   getDb,
   kvGet,
   kvSet,
+  getBookmarkedArticles,
   type Topic,
+  type ArticleRow,
 } from "@/lib/db";
 import { refreshIfNeeded } from "@/lib/crawler/engine";
 import { TopicCard, PrimaryButton } from "@/lib/ui";
@@ -30,6 +32,9 @@ export default function SettingsScreen() {
   const [saved, setSaved] = useState<Set<Topic>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [bookmarks, setBookmarks] = useState<
+    Pick<ArticleRow, "id" | "title" | "site_name" | "url">[]
+  >([]);
 
   useEffect(() => {
     (async () => {
@@ -40,6 +45,7 @@ export default function SettingsScreen() {
           setSelected(new Set(list));
           setSaved(new Set(list));
         }
+        setBookmarks(await getBookmarkedArticles());
       } catch {}
       setLoading(false);
     })();
@@ -100,48 +106,80 @@ export default function SettingsScreen() {
         <Pressable hitSlop={12} onPress={() => router.back()}>
           <Feather name="x" size={20} color={colors.textSecondary} />
         </Pressable>
-        <Text style={styles.title}>settings</Text>
+        <Text style={styles.title}>Settings</Text>
         <View style={{ width: 20 }} />
       </View>
 
       {loading ? null : (
         <Animated.View entering={FadeIn.duration(300)} style={styles.body}>
-          <Text style={styles.sectionLabel}>topics</Text>
-          <View style={styles.topics}>
-            {TOPICS.map((t) => (
-              <TopicCard
-                key={t}
-                label={t}
-                blurb={BLURBS[t]}
-                active={selected.has(t)}
-                onPress={() => toggle(t)}
-              />
-            ))}
-          </View>
-          <Text style={styles.hint}>
-            removed topics stop updating and leave the stream.
-          </Text>
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.sectionLabel}>Topics</Text>
+            <View style={styles.topics}>
+              {TOPICS.map((t) => (
+                <TopicCard
+                  key={t}
+                  label={t}
+                  blurb={BLURBS[t]}
+                  active={selected.has(t)}
+                  onPress={() => toggle(t)}
+                />
+              ))}
+            </View>
 
-          <View style={{ flex: 1 }} />
+            {bookmarks.length > 0 ? (
+              <>
+                <Text style={[styles.sectionLabel, { marginTop: spacing.xl }]}>
+                  Bookmarks
+                </Text>
+                <View style={styles.topics}>
+                  {bookmarks.map((b) => (
+                    <Pressable
+                      key={b.id}
+                      style={styles.bookmarkRow}
+                      onPress={() => Linking.openURL(b.url)}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.bookmarkTitle} numberOfLines={2}>
+                          {b.title}
+                        </Text>
+                        {b.site_name ? (
+                          <Text style={styles.bookmarkSite}>{b.site_name}</Text>
+                        ) : null}
+                      </View>
+                      <Feather
+                        name="arrow-up-right"
+                        size={14}
+                        color={colors.textTertiary}
+                      />
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            ) : null}
 
-          <View style={styles.about}>
-            <Text style={styles.aboutLine}>naturally curious v0.1.0</Text>
-            <Pressable
-              style={styles.githubRow}
-              onPress={() => Linking.openURL(GITHUB_URL)}
-            >
-              <Feather name="github" size={14} color={colors.textTertiary} />
-              <Text style={styles.githubLink}>shhivv/naturallycurious</Text>
-              <Feather
-                name="arrow-up-right"
-                size={12}
-                color={colors.textTertiary}
-              />
-            </Pressable>
-          </View>
+            <View style={styles.about}>
+              <Text style={styles.aboutLine}>naturally curious v0.1.0</Text>
+              <Pressable
+                style={styles.githubRow}
+                onPress={() => Linking.openURL(GITHUB_URL)}
+              >
+                <Feather name="github" size={14} color={colors.textTertiary} />
+                <Text style={styles.githubLink}>shhivv/naturallycurious</Text>
+                <Feather
+                  name="arrow-up-right"
+                  size={12}
+                  color={colors.textTertiary}
+                />
+              </Pressable>
+            </View>
+          </ScrollView>
 
           <PrimaryButton
-            label={saving ? "saving..." : dirty ? "save changes" : "saved"}
+            label={saving ? "Saving..." : dirty ? "Save Changes" : "Saved"}
             enabled={dirty && !saving}
             onPress={save}
           />
@@ -161,7 +199,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
+    paddingTop: spacing.lg,
     paddingBottom: spacing.md,
   },
   title: {
@@ -171,8 +209,9 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.xl,
     paddingBottom: spacing.lg,
+    paddingTop: spacing.sm,
   },
   sectionLabel: {
     fontFamily: fonts.mono,
@@ -191,9 +230,34 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     color: colors.textTertiary,
   },
+  scrollContent: {
+    paddingBottom: spacing.lg,
+  },
+  bookmarkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: colors.bgRaised,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+  },
+  bookmarkTitle: {
+    fontFamily: fonts.sans,
+    fontSize: 14,
+    color: colors.text,
+    lineHeight: 20,
+  },
+  bookmarkSite: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.textTertiary,
+    marginTop: 3,
+  },
   about: {
     alignItems: "center",
     gap: spacing.md,
+    marginTop: spacing.xxl,
     marginBottom: spacing.lg,
   },
   aboutLine: {
@@ -206,8 +270,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 9,
