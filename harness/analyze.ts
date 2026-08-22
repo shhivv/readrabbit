@@ -108,7 +108,7 @@ function bucketOf(ts) {
   for (const [label, max] of buckets) if (d <= max) return label;
   return ">180d";
 }
-function dist(rows) {
+function bucketDist(rows) {
   const m = {};
   for (const r of rows) {
     const b = bucketOf(r.ts);
@@ -116,8 +116,8 @@ function dist(rows) {
   }
   return m;
 }
-const pd = dist(poolAges);
-const dd = dist(dequeAges);
+const pd = bucketDist(poolAges);
+const dd = bucketDist(dequeAges);
 console.log("  bucket     pool%   deque%");
 for (const [label] of buckets) {
   const p = ((pd[label] ?? 0) / Math.max(poolAges.length, 1)) * 100;
@@ -129,8 +129,41 @@ console.log(`  enriched articles with no publish date: ${nullDates}`);
 
 // ---- mainstream leakage ----
 console.log("\n" + "═".repeat(72));
-console.log("SOURCE ROSTER (all crawled sources)");
+console.log("SOURCE DISTRIBUTION");
 console.log("═".repeat(72));
+
+const dist = q(
+  `SELECT s.topic, s.origin,
+          COUNT(DISTINCT s.id) AS sources,
+          COUNT(DISTINCT CASE WHEN a.word_count >= ${MIN_WORDS} THEN a.id END) AS enriched
+   FROM sources s LEFT JOIN articles a ON a.source_id = s.id
+   GROUP BY s.topic, s.origin
+   ORDER BY s.topic, s.origin`
+);
+console.log("\n topic      origin     sources  enriched");
+for (const r of dist) {
+  console.log(
+    ` ${(r.topic ?? "?").padEnd(10)} ${(r.origin ?? "?").padEnd(10)} ${String(r.sources).padStart(7)}  ${String(r.enriched ?? 0).padStart(8)}`
+  );
+}
+
+const perSource = q(
+  `SELECT COALESCE(NULLIF(a.site_domain,''), s.name) AS src, s.topic,
+          COUNT(a.id) AS discovered,
+          SUM(CASE WHEN a.word_count >= ${MIN_WORDS} THEN 1 ELSE 0 END) AS enriched
+   FROM articles a JOIN sources s ON a.source_id = s.id
+   GROUP BY a.source_id
+   ORDER BY enriched DESC, discovered DESC
+   LIMIT 15`
+);
+console.log("\n top sources by enriched output:");
+for (const r of perSource) {
+  console.log(
+    `   ${String(r.enriched).padStart(3)}/${String(r.discovered).padEnd(4)}  ${(r.src || "?").slice(0, 42)} [${r.topic}]`
+  );
+}
+
+console.log("\n SOURCE ROSTER");
 
 const sources = q(`SELECT name, topic, origin, status FROM sources ORDER BY origin, name`);
 const byOrigin = {};

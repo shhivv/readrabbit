@@ -47,8 +47,12 @@ function validEntry(entry: PackEntry): boolean {
 }
 
 // Returns how many pack articles landed in the DB (0 = nothing fetched).
-export async function maybeFetchStarterPack(): Promise<number> {
-  if (!STARTER_PACK_URL) return 0;
+// Never throws: a missing/broken pack must degrade to plain crawling.
+export async function maybeFetchStarterPack(
+  packUrl?: string
+): Promise<number> {
+  const url = packUrl ?? STARTER_PACK_URL;
+  if (!url) return 0;
   try {
     const lastRaw = await kvGet(ATTEMPT_KEY);
     if (lastRaw && Date.now() - parseInt(lastRaw, 10) < THROTTLE_MS) return 0;
@@ -57,7 +61,7 @@ export async function maybeFetchStarterPack(): Promise<number> {
     const timer = setTimeout(() => controller.abort(), 10_000);
     let pack: Pack;
     try {
-      const res = await fetch(STARTER_PACK_URL, { signal: controller.signal });
+      const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) return 0;
       pack = (await res.json()) as Pack;
     } finally {
