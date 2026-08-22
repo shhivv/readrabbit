@@ -17,7 +17,7 @@ import Animated, {
 import { useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { colors, fonts, spacing } from "@/lib/theme";
-import { PrimaryButton, TopicCard } from "./_ui";
+import { PrimaryButton, TopicCard } from "@/lib/ui";
 import { TOPICS, seedCatalogSources, getDb, kvSet, type Topic } from "@/lib/db";
 import { runCrawl } from "@/lib/crawler/engine";
 import { registerBackgroundCrawl } from "@/lib/background";

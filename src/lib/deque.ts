@@ -40,7 +40,12 @@ function weightedSampleQuery(limit: number): string {
   // prior, adapted over time by observed article quality)
   const trust = `(0.75 + 0.5 * MIN(MAX(score, 0.0), 1.0))`;
   const key = `(MAX(quality, 0.05) * ${recency} * ${trust} * ${uniform})`;
-  const diversityKey = `COALESCE(NULLIF(LOWER(TRIM(author)), ''), NULLIF(site_domain, ''), 's' || source_id)`;
+  // Dual caps: group blogs publish under rotating bylines, so an
+  // author-only partition lets one domain flood the stream (martinfowler.com
+  // case); a domain-only one over-penalizes a personal blog syndicated at
+  // two domains. Enforce both, whichever binds first.
+  const domainKey = `COALESCE(NULLIF(site_domain, ''), LOWER(TRIM(author)), 'd' || source_id)`;
+  const authorKey = `COALESCE(NULLIF(LOWER(TRIM(author)), ''), site_domain, 'a' || source_id)`;
   return `
     SELECT id FROM (
       SELECT id,
@@ -54,16 +59,21 @@ function weightedSampleQuery(limit: number): string {
                topic,
                ${key} AS key,
                ROW_NUMBER() OVER (
-                 PARTITION BY ${diversityKey}
+                 PARTITION BY ${domainKey}
                  ORDER BY ${key} DESC
-               ) AS rank_in_source
+               ) AS rank_in_domain,
+               ROW_NUMBER() OVER (
+                 PARTITION BY ${authorKey}
+                 ORDER BY ${key} DESC
+               ) AS rank_in_author
         FROM articles
         WHERE is_archived = 0 AND is_read = 0
           AND word_count >= ${MIN_WORDS}
           AND COALESCE(published_date, fetched_at)
                 > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
       )
-      WHERE rank_in_source <= ${MAX_PER_KEY}
+      WHERE rank_in_domain <= ${MAX_PER_KEY}
+        AND rank_in_author <= ${MAX_PER_KEY}
     )
     WHERE rank_in_topic <= ${MAX_PER_TOPIC}
     ORDER BY key DESC

@@ -14,7 +14,7 @@ import {
   type Topic,
 } from "@/lib/db";
 import { refreshIfNeeded } from "@/lib/crawler/engine";
-import { TopicCard, PrimaryButton } from "./_ui";
+import { TopicCard, PrimaryButton } from "@/lib/ui";
 
 const GITHUB_URL = "https://github.com/shhivv/naturallycurious";
 
