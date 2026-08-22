@@ -51,7 +51,6 @@ import {
 } from "@/lib/deque";
 import { refreshIfNeeded } from "@/lib/crawler/engine";
 import { CodeBlock } from "@/lib/code";
-import { maybeFetchStarterPack } from "@/lib/starter";
 import { colors, fonts, spacing } from "@/lib/theme";
 
 const SPRING_CONFIG = { damping: 20, stiffness: 300, mass: 0.8 };
@@ -720,10 +719,6 @@ export default function ReaderScreen() {
   useEffect(() => {
     if (!starving || loading) return;
     let cancelled = false;
-
-    // static daily pack fills the gap instantly when configured; the crawl
-    // keeps going regardless and takes over with fresher material
-    maybeFetchStarterPack().catch(() => {});
 
     const tick = async () => {
       try {

@@ -289,9 +289,9 @@ function extractMetadata(document: Document, url: string): PageMeta {
   return meta;
 }
 
-// Sanitize already-extracted content HTML (e.g. from a starter pack):
-// same allow-list as the crawl path, so remote-seeded markup is trusted
-// exactly as little as anything crawled.
+// Sanitize content HTML from a non-page source (feed summaries): same
+// allow-list as page extraction, so feed-tier articles are trusted exactly
+// as little as anything crawled.
 export function sanitizeContentHtml(rawHtml: string, baseUrl: string): string {
   try {
     const { document } = parseHTML(`<html><body>${rawHtml}</body></html>`);
