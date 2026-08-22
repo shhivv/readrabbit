@@ -204,9 +204,31 @@ function parseRdf(
   return { title: tidyFeedTitle(feedTitle), siteUrl: fallbackSiteUrl ?? null, entries };
 }
 
+// Query params that mark the same article as a different URL across feeds
+// and social shares — the reader would otherwise show it twice.
+const TRACKING_PARAM = /^(utm_|fbclid$|gclid$|mc_cid$|mc_eid$|ref_src$|ref_url$|cmpid$|spm$|igshid$|si$)/i;
+
+function stripTrackingParams(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (![...parsed.searchParams.keys()].some((k) => TRACKING_PARAM.test(k))) {
+      return url;
+    }
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (TRACKING_PARAM.test(key)) parsed.searchParams.delete(key);
+    }
+    const qs = parsed.searchParams.toString();
+    return `${parsed.origin}${parsed.pathname}${qs ? `?${qs}` : ""}`;
+  } catch {
+    return url;
+  }
+}
+
 function normalizeEntryUrl(raw: string): string {
   const trimmed = raw.trim();
-  if (/^https?:\/\//i.test(trimmed)) return trimmed.split("#")[0];
+  if (/^https?:\/\//i.test(trimmed)) {
+    return stripTrackingParams(trimmed.split("#")[0]);
+  }
   return "";
 }
 

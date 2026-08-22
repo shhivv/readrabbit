@@ -9,6 +9,9 @@ import { getDb } from "./db";
 
 const TEXT_TTL_DAYS = 30;
 const CEILING_BYTES = 120 * 1024 * 1024;
+// Unenriched rows past this age can never be enriched again (the enrich
+// query only considers recent discoveries), so they're pure dead weight.
+const DEAD_META_AGE_DAYS = 45;
 
 export async function pruneStorage(): Promise<void> {
   try {
@@ -23,6 +26,18 @@ export async function pruneStorage(): Promise<void> {
          AND content_html != ''
          AND COALESCE(read_at, fetched_at) < ?`,
       [cutoff]
+    );
+
+    // rows that never got full text and are now outside the enrich window:
+    // feed entries for posts we skipped (too old at ingest) or pages that
+    // kept failing transiently until they went stale
+    const deadCutoff = Date.now() - DEAD_META_AGE_DAYS * 24 * 60 * 60 * 1000;
+    await db.runAsync(
+      `DELETE FROM articles
+       WHERE is_bookmarked = 0 AND is_read = 0
+         AND word_count <= 0
+         AND fetched_at < ?`,
+      [deadCutoff]
     );
 
     await enforceCeiling(db);
