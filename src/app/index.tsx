@@ -149,9 +149,14 @@ async function hydrate(id: number): Promise<HydratedArticle | null> {
   const row = await getArticleById(id);
   if (!row || !row.content_html) return null;
   const likedIndices = await getInterestIndices(id);
+  const segments = splitSegments(row.content_html);
+  // segments carry everything the reader renders; the raw payloads would
+  // otherwise sit in the LRU (~360KB/article x 24) for no benefit
+  row.content_html = "";
+  row.text_content = "";
   const value: HydratedArticle = {
     row,
-    segments: splitSegments(row.content_html),
+    segments,
     likedIndices,
   };
   touchCache(id, value);
@@ -617,17 +622,29 @@ export default function ReaderScreen() {
   const scrollRef = useRef<ScrollView>(null);
 
   const prefetchAround = useCallback((ids: number[], index: number) => {
+    // staggered: each hydrate parses full content on the JS thread, and a
+    // burst of them mid-swipe-animation would stutter the frame pacing
+    let offset = 0;
+    const queue: Array<[number, boolean]> = [];
     for (let i = 1; i <= PREFETCH_AHEAD; i++) {
       const idx = index + i;
       if (idx < ids.length && !hydrationCache.has(ids[idx])) {
-        hydrate(ids[idx]).catch(() => {});
+        queue.push([ids[idx], false]);
       }
     }
     for (let i = 1; i <= PREFETCH_BEHIND; i++) {
       const idx = index - i;
       if (idx >= 0 && idx !== index && !hydrationCache.has(ids[idx])) {
-        hydrate(ids[idx]).catch(() => {});
+        queue.push([ids[idx], true]);
       }
+    }
+    for (const [id, behind] of queue) {
+      setTimeout(
+        () => {
+          hydrate(id).catch(() => {});
+        },
+        (offset += behind ? 0 : 60)
+      );
     }
   }, []);
 

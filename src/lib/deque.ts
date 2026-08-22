@@ -19,9 +19,12 @@ export const LOW_WATER = 12;
 //   site's registrable domain, then source) in any window. Partitioning by
 //   source_id alone lets an author with several feeds — or a multi-author
 //   site with one prolific byline — crowd out everyone else.
+// - Topic mix: the reader explicitly picked their topics, so no single one
+//   may exceed half the window even when its bloggers are prolific.
 const STALE_DAYS = 120;
 const HALF_LIFE_DAYS = 14;
 const MAX_PER_KEY = 3;
+const MAX_PER_TOPIC = Math.ceil(WINDOW_SIZE / 2);
 
 export interface DequeState {
   ids: number[];
@@ -34,26 +37,35 @@ function weightedSampleQuery(limit: number): string {
   // ABS(RANDOM()) mapped to (0,1]
   const uniform = `((ABS(RANDOM()) % 1000000) + 1) / 1000001.0`;
   // source trust prior (articles.score mirrors the origin-based source
-  // prior): seeded personal blogs get a gentle edge over freshly
-  // discovered domains of unknown quality.
+  // prior, adapted over time by observed article quality)
   const trust = `(0.75 + 0.5 * MIN(MAX(score, 0.0), 1.0))`;
   const key = `(MAX(quality, 0.05) * ${recency} * ${trust} * ${uniform})`;
   const diversityKey = `COALESCE(NULLIF(LOWER(TRIM(author)), ''), NULLIF(site_domain, ''), 's' || source_id)`;
   return `
     SELECT id FROM (
       SELECT id,
-             ${key} AS key,
+             key,
              ROW_NUMBER() OVER (
-               PARTITION BY ${diversityKey}
-               ORDER BY ${key} DESC
-             ) AS rank_in_source
-      FROM articles
-      WHERE is_archived = 0 AND is_read = 0
-        AND word_count >= ${MIN_WORDS}
-        AND COALESCE(published_date, fetched_at)
-              > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
+               PARTITION BY COALESCE(topic, 'unknown')
+               ORDER BY key DESC
+             ) AS rank_in_topic
+      FROM (
+        SELECT id,
+               topic,
+               ${key} AS key,
+               ROW_NUMBER() OVER (
+                 PARTITION BY ${diversityKey}
+                 ORDER BY ${key} DESC
+               ) AS rank_in_source
+        FROM articles
+        WHERE is_archived = 0 AND is_read = 0
+          AND word_count >= ${MIN_WORDS}
+          AND COALESCE(published_date, fetched_at)
+                > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
+      )
+      WHERE rank_in_source <= ${MAX_PER_KEY}
     )
-    WHERE rank_in_source <= ${MAX_PER_KEY}
+    WHERE rank_in_topic <= ${MAX_PER_TOPIC}
     ORDER BY key DESC
     LIMIT ${limit}`;
 }

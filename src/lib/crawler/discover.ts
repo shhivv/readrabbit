@@ -106,13 +106,14 @@ export function enqueueCandidates(
   origin: "outbound" | "hn"
 ): void {
   if (!links.length || !poolCache) return;
-  let added = 0;
+  let changed = false;
   for (const link of links.slice(0, 30)) {
     const normalized = normalizeCandidateUrl(link.url);
     if (!normalized) continue;
     const existing = poolCache[normalized.domain];
     if (existing) {
       existing.count += 1;
+      changed = true; // citation counts feed probe ranking — persist them
       continue;
     }
     poolCache[normalized.domain] = {
@@ -123,7 +124,7 @@ export function enqueueCandidates(
       addedAt: Date.now(),
       origin,
     };
-    added++;
+    changed = true;
   }
 
   // cap pool size: drop oldest beyond 400
@@ -132,7 +133,7 @@ export function enqueueCandidates(
     entries.sort((a, b) => b[1].count - a[1].count || b[1].addedAt - a[1].addedAt);
     poolCache = Object.fromEntries(entries.slice(0, 400));
   }
-  if (added > 0) poolDirty = true;
+  if (changed) poolDirty = true;
 }
 
 export async function hnDiscover(): Promise<number> {
