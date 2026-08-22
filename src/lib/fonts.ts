@@ -14,6 +14,7 @@ export const geistFonts = {
   Geist: require("@expo-google-fonts/geist/400Regular/Geist_400Regular.ttf"),
   "Geist-Bold": require("@expo-google-fonts/geist/700Bold/Geist_700Bold.ttf"),
   "Geist-Mono": require("@expo-google-fonts/geist-mono/400Regular/GeistMono_400Regular.ttf"),
+  GreatVibes_400Regular: require("@expo-google-fonts/great-vibes/400Regular/GreatVibes_400Regular.ttf"),
 } as Record<string, number>;
 
 export function allFonts(): Record<string, number> {

@@ -1,23 +1,22 @@
 export const colors = {
-  bg: "#141414",
-  bgRaised: "#1c1c1c",
-  bgHover: "#242424",
-  bgActive: "#2a2a2a",
-  border: "#2a2a2a",
-  borderSubtle: "#222222",
-  text: "#e8e4df",
-  textSecondary: "#8a8a8a",
-  textTertiary: "#5a5a5a",
-  accent: "#c9a87c",
-  accentHover: "#dbbf9a",
-  success: "#7ec77e",
-  error: "#c77e7e",
+  bg: "#0a0a0a",
+  bgRaised: "#141414",
+  bgHover: "#1c1c1c",
+  bgActive: "#232323",
+  border: "#262626",
+  borderSubtle: "#1e1e1e",
+  text: "#f5f5f5",
+  textSecondary: "#a3a3a3",
+  textTertiary: "#6b6b6b",
+  accent: "#ffffff",
+  accentHover: "#d4d4d4",
 };
 
 export const fonts = {
   sans: "Geist",
   sansBold: "Geist-Bold",
   mono: "Geist-Mono",
+  logo: "GreatVibes_400Regular",
 };
 
 export const spacing = {

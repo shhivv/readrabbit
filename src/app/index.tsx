@@ -32,6 +32,7 @@ import { Feather } from "@expo/vector-icons";
 import RenderHtml from "react-native-render-html";
 import { Image as ExpoImage } from "expo-image";
 import { parseHTML } from "linkedom";
+import { useRouter } from "expo-router";
 
 import {
   getArticleById,
@@ -358,7 +359,7 @@ function HeartBadge({ liked }: { liked: boolean }) {
 
   return (
     <Animated.View style={[styles.heartBadge, style]}>
-      <Feather name="heart" size={11} color="#FF6B8A" />
+      <Feather name="heart" size={11} color={colors.text} />
     </Animated.View>
   );
 }
@@ -396,7 +397,7 @@ function TappableParagraph({
   }, [enterDelay, enterOpacity, enterY]);
 
   const animatedBg = useAnimatedStyle(() => ({
-    backgroundColor: `rgba(255, 107, 138, ${bgOpacity.value})`,
+    backgroundColor: `rgba(255, 255, 255, ${bgOpacity.value})`,
     opacity: enterOpacity.value,
     transform: [{ translateY: enterY.value }],
   }));
@@ -618,6 +619,7 @@ const PREFETCH_BEHIND = 2;
 
 export default function ReaderScreen() {
   const { width } = useWindowDimensions();
+  const router = useRouter();
   const contentWidth = width - spacing.lg * 2;
 
   const [dequeIds, setDequeIds] = useState<number[]>([]);
@@ -842,7 +844,7 @@ export default function ReaderScreen() {
   const shareArticle = useCallback(() => {
     if (!article) return;
     Share.share({
-      message: `${article.row.title}\n${article.row.url}\n\n— Shared from Naturally Curious`,
+      message: `${article.row.title}\n${article.row.url}\n\nshared from naturally curious`,
       url: article.row.url,
     }).catch(() => {});
   }, [article]);
@@ -918,7 +920,8 @@ export default function ReaderScreen() {
             <ActivityIndicator color={colors.accent} />
             <Text style={styles.emptyTitle}>gathering good posts…</Text>
             <Text style={styles.emptySubtitle}>
-              your phone is out crawling blogs — this fills in on its own
+              your phone is off reading blogs right now.
+this fills in on its own.
             </Text>
           </Animated.View>
         </View>
@@ -929,6 +932,16 @@ export default function ReaderScreen() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaView style={styles.container} edges={["top"]}>
+        <View style={styles.topBar} pointerEvents="box-none">
+          <Text style={styles.wordmark}>naturally curious</Text>
+          <Pressable
+            hitSlop={12}
+            style={styles.gearBtn}
+            onPress={() => router.push("/settings")}
+          >
+            <Feather name="settings" size={15} color={colors.textSecondary} />
+          </Pressable>
+        </View>
         <GestureDetector gesture={gesture}>
           <Animated.View style={[{ flex: 1 }, animatedStyle]}>
             {article ? (
@@ -1023,7 +1036,37 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: spacing.lg,
     paddingBottom: 80,
-    paddingTop: spacing.sm,
+    paddingTop: 52,
+  },
+  topBar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    elevation: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingLeft: spacing.lg,
+    paddingRight: spacing.md,
+    paddingTop: 6,
+    height: 44,
+  },
+  wordmark: {
+    fontFamily: fonts.logo,
+    fontSize: 22,
+    color: colors.textTertiary,
+  },
+  gearBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(20, 20, 20, 0.7)",
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
   },
   articleHeader: {
     marginBottom: 24,
@@ -1106,7 +1149,7 @@ const styles = StyleSheet.create({
     top: 4,
     bottom: 4,
     width: 2.5,
-    backgroundColor: "#FF6B8A",
+    backgroundColor: colors.text,
     borderRadius: 2,
     opacity: 0.7,
   },

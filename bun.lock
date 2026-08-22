@@ -7,6 +7,7 @@
       "dependencies": {
         "@expo-google-fonts/geist": "^0.4.2",
         "@expo-google-fonts/geist-mono": "^0.4.3",
+        "@expo-google-fonts/great-vibes": "^0.4.1",
         "@expo/vector-icons": "^15.1.1",
         "@mozilla/readability": "^0.6.0",
         "expo": "~57.0.15",
@@ -219,6 +220,8 @@
     "@expo-google-fonts/geist": ["@expo-google-fonts/geist@0.4.2", "", {}, "sha512-cTsqJRQrvK5EniTVwH7UDK18RFf9Bc6yxciAuM936aViQ+eR6j3mLEI2rQkJXz5JP9kwtn8tHJviDyZ0ulH6oA=="],
 
     "@expo-google-fonts/geist-mono": ["@expo-google-fonts/geist-mono@0.4.3", "", {}, "sha512-gjnwv1QOG4meZpMhrLjTIPC/+lhyNu8EcXa2eJPVbPrYvguVjCfBq+Ezq6cWKWW8ung6fqb2TjvuTalE6lqlnw=="],
+
+    "@expo-google-fonts/great-vibes": ["@expo-google-fonts/great-vibes@0.4.1", "", {}, "sha512-sh3S2Toirw5R2smI5YFHPiUcd1mJkcr5njRBGaFW3ldpP8ayTTm3e/aEJLfZzza/zUyL/F85ahplW8RYZXK/TA=="],
 
     "@expo-google-fonts/material-symbols": ["@expo-google-fonts/material-symbols@0.4.44", "", {}, "sha512-36JP9Chcy/QEVZ9ZGY4i6zInlyFPbQjkIm6gRNuWWltScIj0WR8rddcD57EIjSC5YKCe2ZKLO6eO/N5r8Jit0A=="],
 

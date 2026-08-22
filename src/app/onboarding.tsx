@@ -4,51 +4,55 @@ import {
   Text,
   View,
   Pressable,
-  ActivityIndicator,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
-  withDelay,
-  withTiming,
-  Easing,
   FadeIn,
+  Easing,
 } from "react-native-reanimated";
 import { useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { colors, fonts, spacing } from "@/lib/theme";
+import { PrimaryButton, TopicCard } from "./_ui";
 import { TOPICS, seedCatalogSources, getDb, kvSet, type Topic } from "@/lib/db";
 import { runCrawl } from "@/lib/crawler/engine";
 import { registerBackgroundCrawl } from "@/lib/background";
 
+const GITHUB_URL = "https://github.com/shhivv/naturallycurious";
 const SPRING = { damping: 18, stiffness: 260 };
+const ENTER = { duration: 420, easing: Easing.out(Easing.quad) };
 
 const TOPIC_META: Array<{ id: Topic; label: string; blurb: string }> = [
   {
     id: "technology",
     label: "technology",
-    blurb: "systems, programming, security — the craft of building things",
+    blurb: "systems, programming, security",
   },
   {
     id: "economics",
     label: "economics",
-    blurb: "markets, incentives, policy — how the world allocates",
+    blurb: "markets, incentives, policy",
   },
   {
     id: "math",
     label: "math",
-    blurb: "proofs, patterns, problems — thinking in structures",
+    blurb: "proofs, patterns, problems",
   },
 ];
 
+const STEPS = ["welcome", "topics", "about"] as const;
+
 export default function OnboardingScreen() {
   const router = useRouter();
+  const [step, setStep] = useState(0);
   const [selected, setSelected] = useState<Set<Topic>>(new Set());
-  const [phase, setPhase] = useState<"pick" | "starting">("pick");
+  const [starting, setStarting] = useState(false);
 
-  const canBegin = selected.size > 0;
+  const canContinue = selected.size > 0;
 
   function toggle(topic: Topic) {
     setSelected((prev) => {
@@ -60,134 +64,164 @@ export default function OnboardingScreen() {
   }
 
   async function begin() {
-    setPhase("starting");
+    setStarting(true);
     await seedCatalogSources([...selected]);
+    await kvSet("topics", JSON.stringify([...selected]));
     await kvSet("onboarded", "1");
     registerBackgroundCrawl().catch(() => {});
 
     // entirely behind the scenes: the reader opens now and fills itself
-    // from the database as enrichment lands
+    // from the database as articles land
     runCrawl({ mode: "initial" }).catch(() => {});
 
     router.replace("/");
   }
 
-  if (phase !== "pick") {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={[styles.content, { justifyContent: "center", alignItems: "center" }]}>
-          <ActivityIndicator color={colors.accent} />
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        <Animated.View entering={FadeIn.duration(700)} style={styles.header}>
-          <Text style={styles.eyebrow}>naturally curious</Text>
-          <Text style={styles.title}>
-            what are you{"\n"}curious about?
-          </Text>
-          <Text style={styles.subtitle}>
-            pick any — all three if you like. your phone will go find
-            the good stuff itself: small blogs, real people, no feed-bait.
-          </Text>
-        </Animated.View>
+      {step === 0 && (
+        <WelcomeStep key="welcome" onNext={() => setStep(1)} />
+      )}
+      {step === 1 && (
+        <TopicsStep
+          key="topics"
+          selected={selected}
+          canContinue={canContinue}
+          onToggle={toggle}
+          onNext={() => setStep(2)}
+        />
+      )}
+      {step === 2 && (
+        <AboutStep key="about" starting={starting} onBegin={begin} />
+      )}
 
-        <View style={styles.topics}>
-          {TOPIC_META.map((meta, index) => (
-            <TopicCard
-              key={meta.id}
-              label={meta.label}
-              blurb={meta.blurb}
-              active={selected.has(meta.id)}
-              onPress={() => toggle(meta.id)}
-              delay={200 + index * 120}
-            />
-          ))}
+      {step > 0 && !starting ? (
+        <View style={styles.footerNav}>
+          <Pressable hitSlop={12} onPress={() => setStep((s) => s - 1)}>
+            <Text style={styles.backLabel}>back</Text>
+          </Pressable>
+          <View style={styles.dots}>
+            {STEPS.map((_, i) => (
+              <View
+                key={i}
+                style={[styles.dot, i === step && styles.dotActive]}
+              />
+            ))}
+          </View>
+          <View style={{ width: 40 }} />
         </View>
-
-        <View style={{ flex: 1 }} />
-
-        <BeginButton enabled={canBegin} onPress={begin} />
-      </View>
+      ) : null}
     </SafeAreaView>
   );
 }
 
-function TopicCard({
-  label,
-  blurb,
-  active,
-  onPress,
-  delay,
-}: {
-  label: string;
-  blurb: string;
-  active: boolean;
-  onPress: () => void;
-  delay: number;
-}) {
-  const scale = useSharedValue(1);
-  const border = useSharedValue(0);
-  const check = useSharedValue(0);
-
-  useEffect(() => {
-    border.value = withSpring(active ? 1 : 0, SPRING);
-    check.value = withSpring(active ? 1 : 0, SPRING);
-  }, [active, border, check]);
-
-  const cardStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-    borderColor:
-      border.value > 0.5
-        ? colors.accent
-        : colors.border,
-    backgroundColor:
-      border.value > 0.5 ? "rgba(201, 168, 124, 0.07)" : colors.bgRaised,
-  }));
-
+function WelcomeStep({ onNext }: { onNext: () => void }) {
   return (
-    <Animated.View entering={FadeIn.duration(500).delay(delay).easing(Easing.out(Easing.quad))}>
-      <Pressable
-        onPressIn={() => (scale.value = withSpring(0.97, SPRING))}
-        onPressOut={() => (scale.value = withSpring(1, SPRING))}
-        onPress={onPress}
-      >
-        <Animated.View style={[styles.topicCard, cardStyle]}>
-          <View style={styles.topicRow}>
-            <Text style={[styles.topicLabel, active && styles.topicLabelActive]}>
-              {label}
-            </Text>
-            {active ? <Feather name="check" size={16} color={colors.accent} /> : null}
-          </View>
-          <Text style={styles.topicBlurb}>{blurb}</Text>
-        </Animated.View>
-      </Pressable>
-    </Animated.View>
+    <View style={styles.step}>
+      <View style={styles.centerBlock}>
+        <Animated.Text entering={FadeIn.duration(700)} style={styles.logo}>
+          naturally curious
+        </Animated.Text>
+        <Animated.Text
+          entering={FadeIn.duration(600).delay(250)}
+          style={styles.tagline}
+        >
+          your phone reads small independent blogs,{"\n"}so you don't scroll big media
+        </Animated.Text>
+      </View>
+      <PrimaryButton label="get started" onPress={onNext} delay={500} />
+    </View>
   );
 }
 
-function BeginButton({ enabled, onPress }: { enabled: boolean; onPress: () => void }) {
-  const opacity = useSharedValue(enabled ? 1 : 0.35);
-  useEffect(() => {
-    opacity.value = withTiming(enabled ? 1 : 0.35, { duration: 200 });
-  }, [enabled, opacity]);
-
-  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
-
+function TopicsStep({
+  selected,
+  canContinue,
+  onToggle,
+  onNext,
+}: {
+  selected: Set<Topic>;
+  canContinue: boolean;
+  onToggle: (t: Topic) => void;
+  onNext: () => void;
+}) {
   return (
-    <Animated.View style={style}>
-      <Pressable
-        disabled={!enabled}
-        onPress={onPress}
-        style={[styles.beginBtn, !enabled && styles.beginBtnDisabled]}
-      >
-        <Text style={styles.beginLabel}>start exploring</Text>
-      </Pressable>
-    </Animated.View>
+    <View style={styles.step}>
+      <View style={styles.header}>
+        <Text style={styles.title}>what are you into?</Text>
+        <Text style={styles.subtitle}>pick any. all three works.</Text>
+      </View>
+
+      <Animated.View entering={FadeIn.duration(ENTER.duration)} style={styles.topics}>
+        {TOPIC_META.map((meta) => (
+          <TopicCard
+            key={meta.id}
+            label={meta.label}
+            blurb={meta.blurb}
+            active={selected.has(meta.id)}
+            onPress={() => onToggle(meta.id)}
+          />
+        ))}
+      </Animated.View>
+
+      <View style={{ flex: 1 }} />
+
+      <PrimaryButton
+        label="continue"
+        enabled={canContinue}
+        onPress={onNext}
+      />
+    </View>
+  );
+}
+
+function AboutStep({
+  starting,
+  onBegin,
+}: {
+  starting: boolean;
+  onBegin: () => void;
+}) {
+  return (
+    <View style={styles.step}>
+      <View style={styles.header}>
+        <Text style={styles.title}>built to stay yours</Text>
+      </View>
+
+      <Animated.View entering={FadeIn.duration(ENTER.duration)} style={styles.facts}>
+        <FactRow icon="smartphone" text="everything runs on this phone. no account, nothing leaves it." />
+        <FactRow icon="rss" text="it reads small blogs by people, not outlets." />
+        <FactRow icon="git-branch" text="free and open source." />
+
+        <Pressable style={styles.githubRow} onPress={() => Linking.openURL(GITHUB_URL)}>
+          <Feather name="github" size={15} color={colors.textSecondary} />
+          <Text style={styles.githubLink}>shhivv/naturallycurious</Text>
+          <Feather name="arrow-up-right" size={13} color={colors.textTertiary} />
+        </Pressable>
+      </Animated.View>
+
+      <View style={{ flex: 1 }} />
+
+      <PrimaryButton
+        label={starting ? "opening..." : "start reading"}
+        enabled={!starting}
+        onPress={onBegin}
+      />
+    </View>
+  );
+}
+
+function FactRow({ icon, text }: { icon: string; text: string }) {
+  const iconFor: Record<string, keyof typeof Feather.glyphMap> = {
+    smartphone: "smartphone",
+    rss: "rss",
+    "git-branch": "git-branch",
+  };
+  return (
+    <View style={styles.factRow}>
+      <Feather name={iconFor[icon]} size={16} color={colors.textTertiary} />
+      <Text style={styles.factText}>{text}</Text>
+    </View>
   );
 }
 
@@ -196,108 +230,106 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bg,
   },
-  content: {
+  step: {
     flex: 1,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xl,
     paddingBottom: spacing.lg,
   },
-  header: {
-    gap: 12,
-    marginBottom: spacing.xl + spacing.sm,
+  centerBlock: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 18,
   },
-  eyebrow: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 2,
-    textTransform: "uppercase",
-    color: colors.accent,
+  logo: {
+    fontFamily: fonts.logo,
+    fontSize: 58,
+    lineHeight: 74,
+    color: colors.text,
+    textAlign: "center",
+  },
+  tagline: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: colors.textSecondary,
+    textAlign: "center",
+  },
+  header: {
+    gap: 8,
+    marginBottom: spacing.xl,
   },
   title: {
     fontFamily: fonts.sansBold,
-    fontSize: 34,
-    lineHeight: 42,
+    fontSize: 30,
+    lineHeight: 38,
     color: colors.text,
-    letterSpacing: -0.5,
+    letterSpacing: -0.4,
   },
   subtitle: {
-    fontFamily: fonts.sans,
     fontSize: 15,
-    lineHeight: 23,
+    lineHeight: 22,
     color: colors.textSecondary,
   },
   topics: {
     gap: spacing.md,
   },
-  topicCard: {
-    borderWidth: 1.5,
-    borderRadius: 14,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
-    gap: 6,
+  facts: {
+    gap: spacing.lg,
   },
-  topicRow: {
+  factRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 14,
+    paddingRight: spacing.sm,
+  },
+  factText: {
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 23,
+    color: colors.text,
+  },
+  githubRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    alignSelf: "flex-start",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: colors.bgRaised,
+  },
+  githubLink: {
+    fontFamily: fonts.mono,
+    fontSize: 12.5,
+    color: colors.textSecondary,
+  },
+  footerNav: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-  },
-  topicLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 13,
-    letterSpacing: 1.5,
-    textTransform: "uppercase",
-    color: colors.textSecondary,
-  },
-  topicLabelActive: {
-    color: colors.accent,
-  },
-  topicBlurb: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.textTertiary,
-  },
-  beginBtn: {
-    backgroundColor: colors.accent,
-    borderRadius: 12,
-    paddingVertical: 15,
-    alignItems: "center",
-  },
-  beginBtnDisabled: {},
-  beginLabel: {
-    fontFamily: fonts.sansBold,
-    fontSize: 15,
-    color: "#141414",
-    letterSpacing: 0.3,
-  },
-  crawlContent: {
-    flex: 1,
-    justifyContent: "center",
     paddingHorizontal: spacing.lg,
-    gap: spacing.md,
+    paddingBottom: spacing.md,
   },
-  crawlTitle: {
-    fontFamily: fonts.sans,
-    fontSize: 17,
-    color: colors.text,
-    textAlign: "center",
-  },
-  crawlMeta: {
+  backLabel: {
     fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.textTertiary,
-    textAlign: "center",
+    fontSize: 12,
     letterSpacing: 1,
+    color: colors.textTertiary,
   },
-  progressTrack: {
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: colors.bgActive,
-    overflow: "hidden",
+  dots: {
+    flexDirection: "row",
+    gap: 6,
   },
-  progressFill: {
-    height: "100%",
-    backgroundColor: colors.accent,
-    borderRadius: 2,
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.border,
+  },
+  dotActive: {
+    backgroundColor: colors.text,
   },
 });

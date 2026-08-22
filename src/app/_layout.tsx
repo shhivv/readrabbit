@@ -82,6 +82,10 @@ export default function RootLayout() {
           }}
         >
           <Stack.Screen name="onboarding" />
+          <Stack.Screen
+            name="settings"
+            options={{ presentation: "modal", animation: "slide_from_bottom" }}
+          />
         </Stack>
       </>
     </GestureHandlerRootView>
