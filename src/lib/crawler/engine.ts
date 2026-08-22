@@ -22,7 +22,8 @@ import {
   mineSeedBlogrolls,
   probeTopCandidates,
 } from "./discover";
-import { extractFromHtml } from "./extract";
+import { extractFromHtml, sanitizeContentHtml, normalizeWhitespace } from "./extract";
+import { renderMathInHtml } from "./math";
 import { scoreArticleQuality } from "./quality";
 import { pruneStorage } from "../prune";
 
@@ -63,6 +64,11 @@ const DISCOVER_PROBES: Record<CrawlMode, number> = {
 // Archive-heavy feeds otherwise flood storage and enrichment budget with
 // years-old posts the reader would never show anyway.
 const MAX_INGEST_AGE_DAYS = 90;
+
+// Entries whose feed summary carries at least this many words are treated
+// as full articles (feed-tier enrichment) — readable immediately, no page
+// fetch needed. Teaser-only feeds fall through to normal enrichment.
+const MIN_FEED_TIER_WORDS = 250;
 
 // Concurrent DOM parses allowed during enrichment (see extract gate below).
 const EXTRACT_CONCURRENCY = 3;
@@ -198,6 +204,7 @@ async function updateFeeds(
       const ingestCutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
       let newEntries = 0;
       const linkBatch: Array<{ url: string; topicHint: import("../db").Topic }> = [];
+      const feedTier: Array<{ id: number; entry: (typeof res.feed.entries)[number] }> = [];
 
       // One transaction per source: on flash storage every implicit
       // transaction is an fsync, so 30 individual inserts would mean 30
@@ -223,6 +230,16 @@ async function updateFeeds(
           });
           if (inserted != null) newEntries++;
 
+          // Full-content feeds carry the entire article in the entry —
+          // most independent blogs do. Storing it here makes cards readable
+          // within seconds of app open and skips the later page fetch.
+          if (
+            inserted != null &&
+            summaryWordCount(entry.summaryHtml) >= MIN_FEED_TIER_WORDS
+          ) {
+            feedTier.push({ id: inserted, entry });
+          }
+
           // free link mining from feed content — no extra page fetches
           // (summaries can carry full-article HTML; links live in the head)
           if (entry.summaryHtml.length > 200) {
@@ -232,6 +249,48 @@ async function updateFeeds(
           }
         }
       });
+
+      // feed-tier enrichment happens outside the write transaction: it's
+      // CPU work (DOM sanitize), not bookkeeping
+      for (const { id, entry } of feedTier) {
+        try {
+          const clean = sanitizeContentHtml(entry.summaryHtml, entry.url);
+          if (!clean) continue;
+          const html = /\$|\\\(|\\\[|math\/tex/i.test(clean)
+            ? renderMathInHtml(clean)
+            : clean;
+          const text = normalizeWhitespace(
+            html.replace(/<[^>]*>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
+          );
+          const wordCount = text ? text.split(/\s+/).length : 0;
+          if (wordCount < 80) continue; // teaser that snuck past the estimate
+          const { quality } = scoreArticleQuality({
+            title: entry.title,
+            author: entry.author,
+            siteName: res.feed!.title || source.name,
+            publishedDate: entry.publishedAt,
+            excerpt: firstParagraphText(entry.summaryHtml),
+            contentHtml: html,
+            textContent: text,
+            leadImageUrl: "",
+            wordCount,
+          });
+          await safeRecord(() =>
+            setArticleContent(id, {
+              title: entry.title,
+              author: entry.author,
+              siteName: res.feed!.title || source.name,
+              publishedDate: entry.publishedAt,
+              excerpt: "",
+              contentHtml: html,
+              textContent: text.slice(0, 60_000),
+              leadImageUrl: "",
+              wordCount,
+              quality,
+            })
+          );
+        } catch {}
+      }
       enqueueCandidates(linkBatch, "outbound");
 
       await safeRecord(() =>
@@ -274,6 +333,15 @@ async function runPool<T>(
       }
     })
   );
+}
+
+function summaryWordCount(summaryHtml: string): number {
+  if (!summaryHtml) return 0;
+  // cheap estimate over the head of the content; full text is recomputed
+  // after sanitization for anything that qualifies
+  const slice = summaryHtml.slice(0, 100_000);
+  const words = slice.replace(/<[^>]*>/g, " ").match(/\S+/g);
+  return words ? words.length : 0;
 }
 
 function firstParagraphText(summaryHtml: string): string {

@@ -83,6 +83,23 @@ async function main() {
   const rssTimer = setInterval(rssNow, 250);
   let lastGcTick = 0;
   const { runCrawl } = await import("../src/lib/crawler/engine");
+  const { loadDeque } = await import("../src/lib/deque");
+
+  // time-to-first-card: poll the real deque while the crawl runs
+  const crawlStart = Date.now();
+  let firstCardMs: number | null = null;
+  (async () => {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        if ((await loadDeque()).length > 0) {
+          firstCardMs = Date.now() - crawlStart;
+          return;
+        }
+      } catch {}
+    }
+  })();
+
   const ok = await runCrawl({
     mode: "initial",
     onProgress: (p) => {
@@ -110,6 +127,11 @@ async function main() {
     },
   });
   clearInterval(rssTimer);
+  console.log(
+    firstCardMs != null
+      ? `\n✓ first readable card after ${(firstCardMs / 1000).toFixed(1)}s`
+      : "\n✗ no card became readable during the crawl"
+  );
   if (lastPhase && phases[lastPhase]?.end == null) {
     phases[lastPhase].end = Date.now();
   }
@@ -142,7 +164,6 @@ async function main() {
   if (enriched === 0) fail("no articles were enriched");
 
   // ---- serving readiness: deque + hydration ----
-  const { loadDeque } = await import("../src/lib/deque");
   const dequeT0 = Date.now();
   const ids = await loadDeque();
   console.log(
