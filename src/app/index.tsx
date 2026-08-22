@@ -359,7 +359,7 @@ function HeartBadge({ liked }: { liked: boolean }) {
 
   return (
     <Animated.View style={[styles.heartBadge, style]}>
-      <Feather name="heart" size={11} color={colors.text} />
+      <Feather name="heart" size={11} color={colors.like} />
     </Animated.View>
   );
 }
@@ -397,7 +397,7 @@ function TappableParagraph({
   }, [enterDelay, enterOpacity, enterY]);
 
   const animatedBg = useAnimatedStyle(() => ({
-    backgroundColor: `rgba(255, 255, 255, ${bgOpacity.value})`,
+    backgroundColor: `rgba(255, 92, 138, ${bgOpacity.value})`,
     opacity: enterOpacity.value,
     transform: [{ translateY: enterY.value }],
   }));
@@ -445,6 +445,20 @@ function TappableParagraph({
           tagsStyles={baseTagsStyles}
           classesStyles={katexClassStyles}
           domVisitors={domVisitors}
+          systemFonts={[
+            "Geist",
+            "Geist-Bold",
+            "Geist-Mono",
+            "Katex-Main",
+            "Katex-Main-Bold",
+            "Katex-Main-Italic",
+            "Katex-Math-Italic",
+            "Katex-Ams",
+            "Katex-Size1",
+            "Katex-Size2",
+            "Katex-Size3",
+            "Katex-Size4",
+          ]}
           defaultTextProps={{ selectable: true }}
         />
         <Animated.View style={[styles.tappedLine, lineStyle]} />
@@ -1149,7 +1163,7 @@ const styles = StyleSheet.create({
     top: 4,
     bottom: 4,
     width: 2.5,
-    backgroundColor: colors.text,
+    backgroundColor: colors.like,
     borderRadius: 2,
     opacity: 0.7,
   },

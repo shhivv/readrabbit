@@ -1,6 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import { renderMathInHtml, convertMathScripts } from "./math";
+import { renderMathInHtml, convertMathScripts, convertLatexImages } from "./math";
 
 export interface ExtractedArticle {
   title: string;
@@ -138,9 +138,10 @@ function sanitizeDocument(document: Document, baseUrl: string): void {
 export function extractFromHtml(rawHtml: string, url: string): ExtractedArticle | null {
   try {
     const html = rawHtml.slice(0, MAX_EXTRACT_INPUT_BYTES);
-    // MathJax script tags → nc-math placeholders before any sanitization
-    // (they must survive preTrim, which strips everything else script-y)
-    const prepared = preTrim(convertMathScripts(html));
+    // MathJax script tags and WordPress.com latex.php <img> formulas →
+    // nc-math placeholders before any sanitization (they must survive
+    // preTrim, which strips everything else script-y)
+    const prepared = preTrim(convertMathScripts(convertLatexImages(html)));
     const { document } = parseHTML(prepared);
 
     // metadata first — Readability then reuses and mutates this same tree,

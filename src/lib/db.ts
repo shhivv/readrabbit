@@ -1,5 +1,6 @@
 import * as SQLite from "expo-sqlite";
 import { rootDomain } from "./crawler/classify";
+import { convertLatexImages, renderMathInHtml } from "./crawler/math";
 
 export type Topic = "technology" | "economics" | "math";
 export const TOPICS: Topic[] = ["technology", "economics", "math"];
@@ -56,7 +57,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -199,6 +200,29 @@ async function migrate(db: SQLite.SQLiteDatabase) {
       });
     }
     version = 3;
+  }
+
+  // v4: WordPress.com articles stored formulas as remote latex.php PNGs
+  // (white boxes in the dark-mode reader). Rewrite affected bodies to
+  // nc-math placeholders and fill them with pre-rendered KaTeX — the same
+  // composition fresh crawls produce via extractFromHtml. Both steps are
+  // idempotent, and the LIKE guard keeps untouched rows out of the pass.
+  if (version < 4) {
+    const rows = await db.getAllAsync<{ id: number; content_html: string }>(
+      "SELECT id, content_html FROM articles WHERE content_html LIKE '%latex.php%'"
+    );
+    await db.withTransactionAsync(async () => {
+      for (const row of rows) {
+        const converted = renderMathInHtml(convertLatexImages(row.content_html));
+        if (converted !== row.content_html) {
+          await db.runAsync(
+            "UPDATE articles SET content_html = ? WHERE id = ?",
+            [converted, row.id]
+          );
+        }
+      }
+    });
+    version = 4;
   }
 
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);

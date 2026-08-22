@@ -10,6 +10,7 @@ export const colors = {
   textTertiary: "#6b6b6b",
   accent: "#ffffff",
   accentHover: "#d4d4d4",
+  like: "#ff5c8a",
 };
 
 export const fonts = {

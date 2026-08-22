@@ -165,6 +165,45 @@ export function convertMathScripts(html: string): string {
   );
 }
 
+// Same contract as convertMathScripts, for WordPress.com blogs (terrytao,
+// gowers, ...) that embed every formula as a remote latex.php PNG. Those PNGs
+// bake in bg=ffffff (white box in dark mode), but their querystring carries
+// the source TeX in `latex=`, so swap each <img> for an inline nc-math
+// placeholder and let renderMathInHtml fill it later. Host is anchored right
+// after the scheme so lookalike paths on other domains can't match; the loose
+// subdomain wildcard covers s0.wp.com and legacy *.wordpress.com hosts.
+const WP_LATEX_IMG =
+  /<img\b[^>]*\bsrc\s*=\s*(["'])((?:https?:)?\/\/(?:[a-z0-9-]+\.)*(?:wp|wordpress)\.com\/latex\.php\?.*?)\1/gi;
+
+export function convertLatexImages(html: string): string {
+  if (!html.includes("latex.php")) return html;
+  return html.replace(WP_LATEX_IMG, (_tag, _quote: string, src: string) => {
+    const tex = wpLatexParam(decodeEntities(src));
+    // WP always emits s=0 here; display sizing comes from \displaystyle
+    // already present in the TeX, so inline (0) is correct for all fixtures.
+    if (!tex) return _tag;
+    return `<nc-math data-nc-display="0">${escapeHtml(tex)}</nc-math>`;
+  });
+}
+
+// Pull the URL-decoded `latex` param out of a latex.php querystring.
+// Form-encoded: + means space. Malformed %-sequences fall back to the raw
+// encoding rather than dropping the formula.
+function wpLatexParam(src: string): string | null {
+  const query = src.slice(src.indexOf("?") + 1);
+  for (const pair of query.split("&")) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0 || pair.slice(0, eq) !== "latex") continue;
+    const encoded = pair.slice(eq + 1).replace(/\+/g, " ");
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return encoded;
+    }
+  }
+  return null;
+}
+
 export function renderMathInHtml(html: string): string {
   let document: Document;
   try {
