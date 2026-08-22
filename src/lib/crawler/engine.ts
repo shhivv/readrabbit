@@ -300,16 +300,40 @@ async function enrichArticles(
   const db = await getDb();
   const cutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
 
-  const candidates = await db.getAllAsync<ArticleRow>(
+  const raw = await db.getAllAsync<ArticleRow>(
     `SELECT id, source_id, url, title, score, fetched_at FROM articles
      WHERE word_count = 0 AND content_html = ''
        AND fetched_at > ?
        AND (published_date IS NULL OR published_date > ?)
      ORDER BY score DESC, COALESCE(published_date, fetched_at) DESC
      LIMIT ?`,
-    [cutoff, cutoff, batch]
+    [cutoff, cutoff, batch * 4]
   );
-  if (candidates.length === 0) return;
+  if (raw.length === 0) return;
+
+  // Round-robin across sources before slicing the batch: pure
+  // recency-order lets one prolific feed (johndcook.com posts several
+  // times daily) own every enrichment slot, starving the long tail.
+  const bySource = new Map<number, ArticleRow[]>();
+  for (const row of raw) {
+    const key = row.source_id ?? 0;
+    const list = bySource.get(key);
+    if (list) list.push(row);
+    else bySource.set(key, [row]);
+  }
+  const candidates: ArticleRow[] = [];
+  let pickedAny = true;
+  while (candidates.length < batch && pickedAny) {
+    pickedAny = false;
+    for (const list of bySource.values()) {
+      if (candidates.length >= batch) break;
+      const next = list.shift();
+      if (next) {
+        candidates.push(next);
+        pickedAny = true;
+      }
+    }
+  }
 
   // Interleave hosts before pooling: score-ordered candidates cluster
   // same-host articles together, and per-host politeness then serializes a
