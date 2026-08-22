@@ -1,6 +1,7 @@
 import {
   classifyDomain,
   looksLikeArticlePath,
+  rootDomain,
 } from "./classify";
 import { discoverFeedUrl, parseFeed } from "./feeds";
 import { fetchText, getHost, HostScheduler } from "./fetcher";
@@ -69,7 +70,8 @@ function normalizeCandidateUrl(url: string): {
 
 export function collectOutboundLinks(
   html: string,
-  baseUrl: string
+  baseUrl: string,
+  options: { allowRootPaths?: boolean } = {}
 ): Array<{ url: string; topicHint: Topic }> {
   try {
     const base = new URL(baseUrl);
@@ -89,7 +91,13 @@ export function collectOutboundLinks(
       if (resolved.host === base.host) continue; // same-origin: not discovery
       const abs = `${resolved.protocol}//${resolved.host}${resolved.pathname}`;
       if (seen.has(abs)) continue;
-      if (!looksLikeArticlePath(abs)) continue;
+      if (!options.allowRootPaths && !looksLikeArticlePath(abs)) continue;
+      if (options.allowRootPaths) {
+        // root paths allowed, but still skip obvious non-site links
+        const path = resolved.pathname.toLowerCase();
+        if (!looksLikeArticlePath(abs) && path !== "/" && path !== "") continue;
+        if (/\.(pdf|jpg|jpeg|png|gif|zip|mp3|mp4)$/i.test(path)) continue;
+      }
       const cls = classifyDomain(abs);
       if (!cls.allowed) continue;
       seen.add(abs);
@@ -166,6 +174,65 @@ export async function hnDiscover(): Promise<number> {
   }
 }
 
+const BLOGROLL_MINED_KEY = "disco:blogroll_mined_at";
+const BLOGROLL_REMINE_DAYS = 30;
+// Pages personal blogs keep specifically to recommend other writing.
+const BLOGROLL_PATHS = ["/", "/about/", "/links/", "/blogroll/", "/reading/"];
+
+// Mine seed sources' homepages/blogrolls for curated pointers. A link a
+// trusted author keeps on their blogroll is stronger signal than one that
+// happened to appear inside a post — these people are taste-makers in
+// precisely the niches the user opted into.
+export async function mineSeedBlogrolls(
+  network: HostScheduler,
+  deadline: number
+): Promise<void> {
+  const minedAt = (await kvGetJson<Record<string, number>>(BLOGROLL_MINED_KEY)) ?? {};
+  const db = await getDb();
+  const sources = await db.getAllAsync<{ id: number; site_url: string }>(
+    `SELECT id, site_url FROM sources WHERE status = 'active' ORDER BY origin ASC`
+  );
+
+  await loadCandidates();
+  for (const source of sources) {
+    if (Date.now() > deadline) break;
+    const last = minedAt[String(source.id)] ?? 0;
+    if (Date.now() - last < BLOGROLL_REMINE_DAYS * 24 * 60 * 60 * 1000) continue;
+
+    let origin = "";
+    try {
+      origin = new URL(source.site_url).origin;
+    } catch {
+      continue;
+    }
+
+    for (const path of BLOGROLL_PATHS) {
+      if (Date.now() > deadline) break;
+      const pageUrl = `${origin}${path}`;
+      try {
+        const res = await network.run(pageUrl, () =>
+          fetchText(pageUrl, { timeoutMs: 8000 })
+        );
+        if (!res.ok || !res.text) continue;
+        // blogrolls link homepages ("https://friend.example/") — allow
+        // root paths here, unlike in-post mining where they'd be noise
+        const links = collectOutboundLinks(
+          res.text.slice(0, 300_000),
+          res.finalUrl || pageUrl,
+          { allowRootPaths: true }
+        );
+        enqueueCandidates(links, "outbound");
+        // any page that yields links counts as mined; don't try deeper paths
+        minedAt[String(source.id)] = Date.now();
+        break;
+      } catch {
+        // next path
+      }
+    }
+  }
+  await kvSetJson(BLOGROLL_MINED_KEY, minedAt);
+}
+
 export interface ProbeResult {
   domain: string;
   outcome: "added" | "known" | "blocked" | "no-feed" | "error";
@@ -195,13 +262,14 @@ function normalizeName(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-// Same writer, second domain ("Ahead of AI" vs seeded sebastianraschka.com):
-// if any of the candidate's entry authors matches an existing source's name,
-// we already carry that voice — adding another feed of theirs just makes the
-// repetition problem worse.
+// Same writer, second domain ("Ahead of AI" vs seeded sebastianraschka.com,
+// "The Grumpy Economist" vs seeded "John Cochrane (The Grumpy Economist)"):
+// if the candidate's authors or title collide with an existing source, we
+// already carry that voice — another feed of theirs worsens repetition.
 async function isDuplicateVoice(
   db: Awaited<ReturnType<typeof getDb>>,
-  feed: { title: string; entries: Array<{ author: string }> }
+  feed: { title: string; entries: Array<{ author: string }> },
+  candidateDomain?: string
 ): Promise<boolean> {
   const authors = new Set<string>();
   for (const e of feed.entries) {
@@ -210,20 +278,30 @@ async function isDuplicateVoice(
   }
   const titleNorm = normalizeName(feed.title);
 
-  const existing = await db.getAllAsync<{ name: string }>(
-    "SELECT name FROM sources"
+  const existing = await db.getAllAsync<{ name: string; site_url: string; feed_url: string }>(
+    "SELECT name, site_url, feed_url FROM sources"
   );
   for (const row of existing) {
     const n = normalizeName(row.name);
-    if (!n || n.length < 6) continue;
-    if (
-      authors.has(n) ||
-      n === titleNorm ||
-      // containment catches honorifics/suffixes ("Sebastian Raschka, PhD")
-      (n.length >= 8 &&
-        [...authors].some((a) => a.length >= 8 && (a.includes(n) || n.includes(a))))
-    ) {
-      return true;
+
+    // exact or contained name overlap (parentheticals, honorifics, "PhD")
+    const nameMatches =
+      n.length >= 6 &&
+      (authors.has(n) ||
+        n === titleNorm ||
+        (n.length >= 8 &&
+          ([...authors].some((a) => a.length >= 8 && (a.includes(n) || n.includes(a))) ||
+            (titleNorm.length >= 8 &&
+              (titleNorm.includes(n) || n.includes(titleNorm))))));
+    if (nameMatches) return true;
+
+    // same registrable domain under a different scheme/subdomain
+    if (candidateDomain) {
+      for (const url of [row.site_url, row.feed_url]) {
+        try {
+          if (rootDomain(new URL(url).host) === candidateDomain) return true;
+        } catch {}
+      }
     }
   }
   return false;
@@ -233,7 +311,10 @@ async function isDuplicateVoice(
 // all serial *within* the candidate's host (politeness) but fully parallel
 // *across* candidates. Sequential probing was the single largest cost of the
 // initial crawl (~150s for 24 candidates on desktop; phones are worse).
-export async function probeTopCandidates(limit: number): Promise<ProbeResult[]> {
+export async function probeTopCandidates(
+  limit: number,
+  deadlineMs: number = Date.now() + 120_000
+): Promise<ProbeResult[]> {
   const pool = await loadCandidates();
   const rejected = (await kvGetJson<Record<string, number>>(REJECTED_KEY)) ?? {};
 
@@ -297,7 +378,7 @@ export async function probeTopCandidates(limit: number): Promise<ProbeResult[]> 
         rejected[domain] = Date.now();
         return { domain, outcome: "blocked" };
       }
-      if (await isDuplicateVoice(db, feed)) {
+      if (await isDuplicateVoice(db, feed, domain)) {
         delete pool[domain];
         poolDirty = true;
         return { domain, outcome: "known" };
@@ -320,8 +401,9 @@ export async function probeTopCandidates(limit: number): Promise<ProbeResult[]> 
 
   const workers = Array.from({ length: Math.min(network.parallelism, ranked.length) }, async () => {
     for (;;) {
+      if (Date.now() > deadlineMs || results.length >= limit) return;
       const i = cursor++;
-      if (i >= ranked.length || results.length >= limit) return;
+      if (i >= ranked.length) return;
       const [domain, candidate] = ranked[i];
       const result = await probeOne(domain, candidate);
       // `added`/`blocked`/`no-feed` consume a probe slot; `error` doesn't so a

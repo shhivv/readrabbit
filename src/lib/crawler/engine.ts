@@ -19,6 +19,7 @@ import {
   flushCandidates,
   hnDiscover,
   loadCandidates,
+  mineSeedBlogrolls,
   probeTopCandidates,
 } from "./discover";
 import { extractFromHtml } from "./extract";
@@ -71,7 +72,9 @@ const EXTRACT_CONCURRENCY = 3;
 const FEED_PARSE_CONCURRENCY = 5;
 
 const LOCK_KEY = "engine_lock";
-const LOCK_STALE_MS = 15 * 60 * 1000;
+// Short enough that a task the OS killed mid-run (iOS suspends background
+// work aggressively) doesn't block the next app-open refresh for long.
+const LOCK_STALE_MS = 5 * 60 * 1000;
 const LAST_CRAWL_KEY = "last_crawl_at";
 
 let running: Promise<boolean> | null = null;
@@ -131,9 +134,13 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
   }
   if (Date.now() < deadline && mode !== "foreground") {
     onProgress?.({ phase: "discover", done: 0, total: DISCOVER_PROBES[mode] });
+    // curated pointers from seed authors' own pages — capped so probing
+    // keeps its share of the remaining budget
+    await mineSeedBlogrolls(network, Date.now() + 30_000);
+    await flushCandidates();
     await hnDiscover();
     await flushCandidates();
-    await probeTopCandidates(DISCOVER_PROBES[mode]);
+    await probeTopCandidates(DISCOVER_PROBES[mode], Date.now() + 60_000);
     await flushCandidates();
   }
   if (mode !== "initial") {
