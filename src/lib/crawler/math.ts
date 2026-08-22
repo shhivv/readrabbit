@@ -173,7 +173,7 @@ export function convertMathScripts(html: string): string {
 // after the scheme so lookalike paths on other domains can't match; the loose
 // subdomain wildcard covers s0.wp.com and legacy *.wordpress.com hosts.
 const WP_LATEX_IMG =
-  /<img\b[^>]*\bsrc\s*=\s*(["'])((?:https?:)?\/\/(?:[a-z0-9-]+\.)*(?:wp|wordpress)\.com\/latex\.php\?.*?)\1/gi;
+  /<img\b[^>]*\bsrc\s*=\s*(["'])((?:https?:)?\/\/(?:[a-z0-9-]+\.)*(?:wp|wordpress)\.com\/latex\.php\?.*?)\1[^>]*\/?>/gi;
 
 export function convertLatexImages(html: string): string {
   if (!html.includes("latex.php")) return html;

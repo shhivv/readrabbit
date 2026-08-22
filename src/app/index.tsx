@@ -9,7 +9,7 @@ import {
   Share,
   ActivityIndicator,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   GestureDetector,
   Gesture,
@@ -27,6 +27,7 @@ import Animated, {
   runOnJS,
   FadeIn,
   Easing,
+  type SharedValue,
 } from "react-native-reanimated";
 import { Feather } from "@expo/vector-icons";
 import RenderHtml from "react-native-render-html";
@@ -235,8 +236,6 @@ const baseTagsStyles = {
   img: { borderRadius: 10 },
   pre: {
     backgroundColor: colors.bgRaised,
-    borderWidth: 1,
-    borderColor: colors.border,
     borderRadius: 8,
     padding: 14,
     fontFamily: fonts.mono,
@@ -579,18 +578,6 @@ function ArticleHeader({
           {decodeEntities(article.author)}
         </Animated.Text>
       ) : null}
-
-      <Animated.View
-        entering={FadeIn.duration(ENTER_DURATION).easing(ENTER_EASE).delay(180)}
-        style={styles.actionRow}
-      >
-        <ActionButton
-          label={bookmarked ? "bookmarked" : "bookmark"}
-          active={bookmarked}
-          onPress={onToggleBookmark}
-        />
-        <ActionButton label="share" onPress={onShare} />
-      </Animated.View>
     </View>
   );
 }
@@ -634,6 +621,7 @@ const PREFETCH_BEHIND = 2;
 export default function ReaderScreen() {
   const { width } = useWindowDimensions();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const contentWidth = width - spacing.lg * 2;
 
   const [dequeIds, setDequeIds] = useState<number[]>([]);
@@ -863,6 +851,12 @@ export default function ReaderScreen() {
     }).catch(() => {});
   }, [article]);
 
+  const notInterested = useCallback(() => {
+    if (!article) return;
+    archiveArticle(article.row.id).catch(() => {});
+    navigate(1);
+  }, [article, navigate]);
+
   const hasNext = true; // deque refills forward forever
   const hasPrev = currentIndex > 0;
 
@@ -945,24 +939,14 @@ this fills in on its own.
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaView style={styles.container} edges={["top"]}>
-        <View style={styles.topBar} pointerEvents="box-none">
-          <Text style={styles.wordmark}>naturally curious</Text>
-          <Pressable
-            hitSlop={12}
-            style={styles.gearBtn}
-            onPress={() => router.push("/settings")}
-          >
-            <Feather name="settings" size={15} color={colors.textSecondary} />
-          </Pressable>
-        </View>
+      <View style={styles.container}>
         <GestureDetector gesture={gesture}>
           <Animated.View style={[{ flex: 1 }, animatedStyle]}>
             {article ? (
               <ScrollView
                 ref={scrollRef}
                 style={styles.scroll}
-                contentContainerStyle={styles.scrollContent}
+                contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 12 }]}
                 showsVerticalScrollIndicator={false}
                 key={`scroll-${article.row.id}`}
               >
@@ -1022,14 +1006,21 @@ this fills in on its own.
                   </Text>
                 ) : null}
 
-                <View style={{ height: 60 }} />
+                <View style={{ height: 100 }} />
               </ScrollView>
             ) : (
               <InlineSkeleton contentWidth={contentWidth} />
             )}
           </Animated.View>
         </GestureDetector>
-      </SafeAreaView>
+        <FloatingActions
+          bookmarked={bookmarked}
+          onToggleBookmark={toggleBookmark}
+          onShare={shareArticle}
+          onNotInterested={notInterested}
+          onSettings={() => router.push("/settings")}
+        />
+      </View>
     </GestureHandlerRootView>
   );
 }
@@ -1037,6 +1028,172 @@ this fills in on its own.
 async function setArticleBookmark(articleId: number, next: boolean): Promise<void> {
   await setBookmarked(articleId, next);
 }
+
+const FAB_SIZE = 40;
+const FAB_ITEMS = [
+  { key: "settings", label: "settings" },
+  { key: "share", label: "share" },
+  { key: "bookmark", label: "bookmark" },
+];
+const FAB_ITEM_HEIGHT = 44;
+
+function FloatingActions({
+  bookmarked,
+  onToggleBookmark,
+  onShare,
+  onNotInterested,
+  onSettings,
+}: {
+  bookmarked: boolean;
+  onToggleBookmark: () => void;
+  onShare: () => void;
+  onNotInterested: () => void;
+  onSettings: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const open = useSharedValue(0);
+  const [expanded, setExpanded] = useState(false);
+
+  const toggle = useCallback(() => {
+    const next = !expanded;
+    setExpanded(next);
+    open.value = withSpring(next ? 1 : 0, { damping: 18, stiffness: 280, mass: 0.5 });
+  }, [expanded, open]);
+
+  const close = useCallback(() => {
+    setExpanded(false);
+    open.value = withSpring(0, { damping: 18, stiffness: 280, mass: 0.5 });
+  }, [open]);
+
+  const handleAction = useCallback(
+    (key: string) => {
+      close();
+      switch (key) {
+        case "bookmark":
+          onToggleBookmark();
+          break;
+        case "share":
+          onShare();
+          break;
+        case "not-interested":
+          onNotInterested();
+          break;
+        case "settings":
+          onSettings();
+          break;
+      }
+    },
+    [close, onToggleBookmark, onShare, onNotInterested, onSettings]
+  );
+
+  const mainRotation = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${interpolate(open.value, [0, 1], [0, 45])}deg` }],
+  }));
+
+  const overlayStyle = useAnimatedStyle(() => ({
+    opacity: open.value * 0.85,
+  }));
+
+  return (
+    <>
+      <Animated.View
+        pointerEvents={expanded ? "auto" : "none"}
+        style={[StyleSheet.absoluteFill, { backgroundColor: "#000" }, overlayStyle]}
+      >
+        <Pressable style={StyleSheet.absoluteFill} onPress={close} />
+      </Animated.View>
+      <View
+        style={[
+          fabStyles.container,
+          { bottom: Math.max(insets.bottom, 16) + 8, right: spacing.lg },
+        ]}
+        pointerEvents="box-none"
+      >
+        {FAB_ITEMS.map((item, i) => (
+          <FabOption
+            key={item.key}
+            label={
+              item.key === "bookmark" && bookmarked ? "bookmarked" : item.label
+            }
+            index={i}
+            total={FAB_ITEMS.length}
+            open={open}
+            active={item.key === "bookmark" && bookmarked}
+            onPress={() => handleAction(item.key)}
+          />
+        ))}
+        <AnimatedPressable onPress={toggle} style={fabStyles.main}>
+          <Feather name="more-horizontal" size={18} color={colors.text} />
+        </AnimatedPressable>
+      </View>
+    </>
+  );
+}
+
+function FabOption({
+  label,
+  index,
+  total,
+  open,
+  active,
+  onPress,
+}: {
+  label: string;
+  index: number;
+  total: number;
+  open: SharedValue<number>;
+  active?: boolean;
+  onPress: () => void;
+}) {
+  const reverseIndex = total - 1 - index;
+  const style = useAnimatedStyle(() => {
+    const stagger = reverseIndex * 0.04;
+    const progress = interpolate(open.value, [stagger, stagger + 0.5], [0, 1], "clamp");
+    return {
+      opacity: progress,
+      transform: [
+        { translateY: interpolate(progress, [0, 1], [8, 0]) },
+      ],
+    };
+  });
+
+  return (
+    <Animated.View style={[{ paddingVertical: 10, alignSelf: "flex-end" }, style]}>
+      <Pressable onPress={onPress} hitSlop={12}>
+        <Text
+          style={[
+            fabStyles.optionLabel,
+            active && { color: colors.accent },
+          ]}
+        >
+          {label}
+        </Text>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+const fabStyles = StyleSheet.create({
+  container: {
+    position: "absolute",
+    alignItems: "flex-end",
+    zIndex: 100,
+    elevation: 100,
+  },
+  main: {
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    borderRadius: FAB_SIZE / 2,
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  optionLabel: {
+    fontFamily: fonts.mono,
+    fontSize: 17,
+    color: colors.text,
+  },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
@@ -1050,7 +1207,6 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: spacing.lg,
     paddingBottom: 80,
-    paddingTop: 52,
   },
   topBar: {
     position: "absolute",
@@ -1071,16 +1227,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.logo,
     fontSize: 22,
     color: colors.textTertiary,
-  },
-  gearBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(20, 20, 20, 0.7)",
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
   },
   articleHeader: {
     marginBottom: 24,
@@ -1126,11 +1272,8 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     paddingHorizontal: 12,
     borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
   },
   actionBtnActive: {
-    borderColor: colors.accent,
     backgroundColor: "rgba(201, 168, 124, 0.1)",
   },
   actionLabel: {

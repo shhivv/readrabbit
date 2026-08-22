@@ -57,7 +57,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -223,6 +223,27 @@ async function migrate(db: SQLite.SQLiteDatabase) {
       }
     });
     version = 4;
+  }
+
+  // v5: v4's regex only consumed through the src attribute, leaving
+  // trailing alt="…"> fragments as visible text. Re-run with the fixed
+  // regex that consumes the full <img …> tag.
+  if (version < 5) {
+    const rows = await db.getAllAsync<{ id: number; content_html: string }>(
+      "SELECT id, content_html FROM articles WHERE content_html LIKE '%latex.php%' OR content_html LIKE '%alt=\"%'"
+    );
+    await db.withTransactionAsync(async () => {
+      for (const row of rows) {
+        const converted = renderMathInHtml(convertLatexImages(row.content_html));
+        if (converted !== row.content_html) {
+          await db.runAsync(
+            "UPDATE articles SET content_html = ? WHERE id = ?",
+            [converted, row.id]
+          );
+        }
+      }
+    });
+    version = 5;
   }
 
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);

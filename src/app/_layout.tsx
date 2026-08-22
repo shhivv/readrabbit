@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useEffect, useState } from "react";
 import { View, ActivityIndicator } from "react-native";
 import { colors } from "@/lib/theme";
@@ -72,22 +73,24 @@ export default function RootLayout() {
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
-      <>
-        <StatusBar style="light" />
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: colors.bg },
-          }}
-        >
-          <Stack.Screen name="onboarding" />
-          <Stack.Screen
-            name="settings"
-            options={{ presentation: "modal", animation: "slide_from_bottom" }}
-          />
-        </Stack>
-      </>
-    </GestureHandlerRootView>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
+        <>
+          <StatusBar style="light" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: colors.bg },
+            }}
+          >
+            <Stack.Screen name="onboarding" />
+            <Stack.Screen
+              name="settings"
+              options={{ presentation: "modal", animation: "slide_from_bottom" }}
+            />
+          </Stack>
+        </>
+      </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
