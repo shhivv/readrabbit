@@ -50,6 +50,8 @@ import {
   LOW_WATER,
 } from "@/lib/deque";
 import { refreshIfNeeded } from "@/lib/crawler/engine";
+import { CodeBlock } from "@/lib/code";
+import { maybeFetchStarterPack } from "@/lib/starter";
 import { colors, fonts, spacing } from "@/lib/theme";
 
 const SPRING_CONFIG = { damping: 20, stiffness: 300, mass: 0.8 };
@@ -62,6 +64,7 @@ const ENTER_EASE = Easing.out(Easing.exp);
 interface Segment {
   index: number;
   html: string;
+  code?: { text: string; lang: string | null };
 }
 
 interface HydratedArticle {
@@ -113,9 +116,21 @@ function splitSegments(contentHtml: string): Segment[] {
     let index = 0;
     for (const el of Array.from(document.body.children)) {
       const tag = el.tagName.toLowerCase();
-      if (
+      if (tag === "pre") {
+        // code blocks render through the dedicated highlighter, not
+        // RenderHtml (which collapses whitespace inside pre)
+        segments.push({
+          index,
+          html: "",
+          code: {
+            text: el.textContent ?? "",
+            lang: el.getAttribute("data-nc-lang"),
+          },
+        });
+        index++;
+        if (index >= 250) break;
+      } else if (
         tag === "p" ||
-        tag === "pre" ||
         tag === "blockquote" ||
         tag === "h1" ||
         tag === "h2" ||
@@ -706,6 +721,10 @@ export default function ReaderScreen() {
     if (!starving || loading) return;
     let cancelled = false;
 
+    // static daily pack fills the gap instantly when configured; the crawl
+    // keeps going regardless and takes over with fresher material
+    maybeFetchStarterPack().catch(() => {});
+
     const tick = async () => {
       try {
         const ids = await loadDeque();
@@ -942,16 +961,30 @@ export default function ReaderScreen() {
 
                 {article.segments.length > 0 ? (
                   <View style={styles.segmentList}>
-                    {article.segments.map((seg) => (
-                      <TappableParagraph
-                        key={`${article.row.id}-${seg.index}`}
-                        segment={seg}
-                        articleId={article.row.id}
-                        liked={article.likedIndices.has(seg.index)}
-                        contentWidth={contentWidth}
-                        enterDelay={Math.min(240 + seg.index * 30, 800)}
+                {article.segments.map((seg) =>
+                  seg.code ? (
+                    <Animated.View
+                      key={`${article.row.id}-code-${seg.index}`}
+                      entering={FadeIn.duration(ENTER_DURATION)
+                        .easing(ENTER_EASE)
+                        .delay(Math.min(240 + seg.index * 30, 800))}
+                    >
+                      <CodeBlock
+                        code={seg.code.text}
+                        langHint={seg.code.lang ?? undefined}
                       />
-                    ))}
+                    </Animated.View>
+                  ) : (
+                    <TappableParagraph
+                      key={`${article.row.id}-${seg.index}`}
+                      segment={seg}
+                      articleId={article.row.id}
+                      liked={article.likedIndices.has(seg.index)}
+                      contentWidth={contentWidth}
+                      enterDelay={Math.min(240 + seg.index * 30, 800)}
+                    />
+                  )
+                )}
                   </View>
                 ) : (
                   <Animated.View

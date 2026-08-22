@@ -11,7 +11,7 @@
       ]
     }
   },
-  "exclude": ["harness"],
+  "exclude": ["harness", "publisher"],
   "include": [
     "**/*.ts",
     "**/*.tsx",

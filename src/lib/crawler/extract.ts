@@ -87,6 +87,7 @@ function sanitizeDocument(document: Document, baseUrl: string): void {
     for (const attr of Array.from(el.attributes ?? [])) {
       const name = attr.name.toLowerCase();
       if (tag === "nc-math" && name === "data-nc-display") continue;
+      if ((tag === "pre" || tag === "code") && name === "data-nc-lang") continue;
 
       const drop =
         name.startsWith("on") ||
@@ -99,6 +100,19 @@ function sanitizeDocument(document: Document, baseUrl: string): void {
         name.startsWith("data-") ||
         name.startsWith("aria-");
       if (drop) {
+        // remember the highlighter's language hint (class="language-rust")
+        // before dropping the class — the reader uses it for coloring
+        if (
+          name === "class" &&
+          (tag === "pre" || tag === "code")
+        ) {
+          const hint = /(?:^|\s)(?:lang|language)[-_]([\w+#-]+)/i.exec(
+            attr.value ?? ""
+          );
+          if (hint && !el.getAttribute("data-nc-lang")) {
+            el.setAttribute("data-nc-lang", hint[1].toLowerCase());
+          }
+        }
         el.removeAttribute(attr.name);
         continue;
       }
@@ -275,6 +289,19 @@ function extractMetadata(document: Document, url: string): PageMeta {
   return meta;
 }
 
+// Sanitize already-extracted content HTML (e.g. from a starter pack):
+// same allow-list as the crawl path, so remote-seeded markup is trusted
+// exactly as little as anything crawled.
+export function sanitizeContentHtml(rawHtml: string, baseUrl: string): string {
+  try {
+    const { document } = parseHTML(`<html><body>${rawHtml}</body></html>`);
+    sanitizeDocument(document, baseUrl);
+    return document.body.innerHTML.slice(0, MAX_CONTENT_HTML_BYTES);
+  } catch {
+    return "";
+  }
+}
+
 // Heuristic extraction: pick the DOM region with the most long-form paragraph
 // text (Readability-style density scoring, much simpler).
 function heuristicExtract(
@@ -291,7 +318,13 @@ function heuristicExtract(
 
     const scored = candidates
       .map((node) => {
-        const text = normalizeWhitespace(node.textContent ?? "");
+        const tag = node.tagName.toLowerCase();
+        // pre blocks live and die by their whitespace — score them on the
+        // normalized form but carry the raw text through untouched
+        const text =
+          tag === "pre"
+            ? (node.textContent ?? "").replace(/[ \t]+\n/g, "\n").trim()
+            : normalizeWhitespace(node.textContent ?? "");
         const anchorText = Array.from(node.querySelectorAll("a")).reduce(
           (sum, a) => sum + (a.textContent ?? "").length,
           0
@@ -302,6 +335,7 @@ function heuristicExtract(
           len: text.length,
           linkRatio: text.length > 0 ? anchorText / text.length : 1,
           text,
+          isPre: tag === "pre",
         };
       })
       .filter((c) => c.len >= 40 && c.linkRatio < 0.55 && !isBoilerplate(c.text));
@@ -337,11 +371,11 @@ function heuristicExtract(
       if (tag === "nc-math") {
         // pre-converted math placeholder — carry through untouched
         parts.push(c.node.outerHTML);
-      } else if (tag === "pre" || tag === "blockquote") {
-        parts.push(`<${tag}>${escapeHtml(c.text)}</${tag}>`);
+      } else if (tag === "pre") {
+        parts.push(`<pre>${escapeHtml(c.text)}</pre>`);
       } else {
         const innerHtml = (c.node as HTMLElement).innerHTML ?? escapeHtml(c.text);
-        parts.push(`<p>${innerHtml}</p>`);
+        parts.push(`<${tag}>${innerHtml}</${tag}>`);
       }
     }
 

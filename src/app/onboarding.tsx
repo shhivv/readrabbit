@@ -17,6 +17,7 @@ import Animated, {
   FadeIn,
 } from "react-native-reanimated";
 import { useRouter } from "expo-router";
+import { Feather } from "@expo/vector-icons";
 import { colors, fonts, spacing } from "@/lib/theme";
 import { TOPICS, seedCatalogSources, getDb, kvSet, type Topic } from "@/lib/db";
 import { runCrawl } from "@/lib/crawler/engine";
@@ -90,8 +91,8 @@ export default function OnboardingScreen() {
             what are you{"\n"}curious about?
           </Text>
           <Text style={styles.subtitle}>
-            pick a few. your phone will go find the good
-            stuff itself — small blogs, real people, no feed-bait.
+            pick any — all three if you like. your phone will go find
+            the good stuff itself: small blogs, real people, no feed-bait.
           </Text>
         </Animated.View>
 
@@ -131,10 +132,12 @@ function TopicCard({
 }) {
   const scale = useSharedValue(1);
   const border = useSharedValue(0);
+  const check = useSharedValue(0);
 
   useEffect(() => {
     border.value = withSpring(active ? 1 : 0, SPRING);
-  }, [active, border]);
+    check.value = withSpring(active ? 1 : 0, SPRING);
+  }, [active, border, check]);
 
   const cardStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -154,9 +157,12 @@ function TopicCard({
         onPress={onPress}
       >
         <Animated.View style={[styles.topicCard, cardStyle]}>
-          <Text style={[styles.topicLabel, active && styles.topicLabelActive]}>
-            {label}
-          </Text>
+          <View style={styles.topicRow}>
+            <Text style={[styles.topicLabel, active && styles.topicLabelActive]}>
+              {label}
+            </Text>
+            {active ? <Feather name="check" size={16} color={colors.accent} /> : null}
+          </View>
           <Text style={styles.topicBlurb}>{blurb}</Text>
         </Animated.View>
       </Pressable>
@@ -229,6 +235,11 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingHorizontal: 18,
     gap: 6,
+  },
+  topicRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   topicLabel: {
     fontFamily: fonts.mono,

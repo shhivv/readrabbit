@@ -44,3 +44,5 @@ example
 
 # harness local artifacts
 harness/.data/
+publisher/.data/
+publisher/node_modules/
