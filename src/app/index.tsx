@@ -1029,7 +1029,7 @@ async function setArticleBookmark(articleId: number, next: boolean): Promise<voi
   await setBookmarked(articleId, next);
 }
 
-const FAB_SIZE = 40;
+const FAB_SIZE = 50;
 const FAB_ITEMS = [
   { key: "settings", label: "Settings" },
   { key: "share", label: "Share" },
@@ -1105,7 +1105,7 @@ function FloatingActions({
       <View
         style={[
           fabStyles.container,
-          { bottom: Math.max(insets.bottom, 16) + 8, right: spacing.lg },
+          { bottom: Math.max(insets.bottom, 16) + 8 },
         ]}
         pointerEvents="box-none"
       >
@@ -1123,7 +1123,7 @@ function FloatingActions({
           />
         ))}
         <AnimatedPressable onPress={toggle} style={fabStyles.main}>
-          <Feather name="more-horizontal" size={18} color={colors.text} />
+          <Feather name="more-horizontal" size={20} color={colors.text} />
         </AnimatedPressable>
       </View>
     </>
@@ -1176,6 +1176,7 @@ function FabOption({
 const fabStyles = StyleSheet.create({
   container: {
     position: "absolute",
+    right: spacing.lg,
     alignItems: "flex-end",
     zIndex: 100,
     elevation: 100,
@@ -1184,7 +1185,7 @@ const fabStyles = StyleSheet.create({
     width: FAB_SIZE,
     height: FAB_SIZE,
     borderRadius: FAB_SIZE / 2,
-    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    backgroundColor: "#2c2c2c",
     alignItems: "center",
     justifyContent: "center",
   },
