@@ -147,9 +147,9 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
           style={styles.brandIcon}
         >
           <Image
-            source={require("../../assets/images/icon.png")}
+            source={require("../../assets/images/splash-icon.png")}
             style={StyleSheet.absoluteFill}
-            contentFit="cover"
+            contentFit="contain"
             accessible
             accessibilityLabel="ReadRabbit logo"
           />
@@ -333,11 +333,6 @@ const styles = StyleSheet.create({
   brandIcon: {
     width: 128,
     height: 128,
-    borderRadius: 30,
-    borderWidth: 1,
-    borderColor: colors.border,
-    overflow: "hidden",
-    backgroundColor: "#151515",
   },
   logo: {
     fontFamily: fonts.sansBold,
