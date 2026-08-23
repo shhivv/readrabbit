@@ -27,7 +27,7 @@ const LEXICONS: Record<Topic, Lexicon> = {
       "algorithm", "source code", "open source", "developer tool",
       "web browser", "cloud computing", "neural network",
       "generative ai", "language model", "coding agent", "memory safety",
-      "computer vision",
+      "computer vision", "wireless network", "virtual machine", "nanogpt",
     ],
     supporting: [
       "software", "programming", "computer", "developer", "coding", "code",
@@ -35,6 +35,8 @@ const LEXICONS: Record<Topic, Lexicon> = {
       "library", "runtime", "linux", "python", "javascript", "typescript",
       "rust", "security", "encryption", "hardware", "gpu", "llm", "mcp",
       "chatgpt", "claude", "openai", "debugging", "browser", "ai model",
+      "gpt", "wifi", "wi-fi", "wireless", "firmware", "microprocessor",
+      "processor", "chipset", "emulator", "bookmarklet", "webpage",
     ],
   },
   economics: {

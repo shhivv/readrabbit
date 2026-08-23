@@ -39,8 +39,15 @@ legacyDb.exec(`
     quality REAL NOT NULL DEFAULT 0,
     site_domain TEXT NOT NULL DEFAULT ''
   );
-  INSERT INTO articles (url, title, author, fetched_at)
-    VALUES ('https://legacy.example/essay', 'Legacy essay', '  Joan   Robinson ', 1);
+  INSERT INTO articles (url, title, author, fetched_at, is_read, read_at)
+    VALUES (
+      'https://legacy.example/essay',
+      'Legacy essay',
+      '  Joan   Robinson ',
+      1,
+      1,
+      123456
+    );
   PRAGMA user_version = 5;
 `);
 legacyDb.close();
@@ -57,12 +64,15 @@ Bun.plugin({
 
 const {
   getDb,
+  getIdentityExposure,
   getMutedAuthors,
+  markRead,
   muteAuthor,
   setArticleContent,
   unmuteAuthor,
   upsertArticleMeta,
 } = await import("../src/lib/db");
+const { loadDeque } = await import("../src/lib/deque");
 
 describe("article attribution", () => {
   test("promotes the author while retaining the publication as context", () => {
@@ -98,10 +108,29 @@ describe("article attribution", () => {
         site_name: "Mathblogging.org",
       }).primary
     ).toBe("Denise Gaskins");
+    expect(
+      getArticleAttribution({
+        author: "burakemir.ch via abhin4v",
+        site_name: "burakemir.ch",
+      })
+    ).toEqual({ primary: "burakemir.ch", secondary: "", hasAuthor: false });
+    expect(
+      getArticleAttribution({
+        author:
+          "Simon Little · CBC News · Posted: Aug 22, 2026 | Last Updated: August 22",
+        site_name: "CBC",
+      }).primary
+    ).toBe("Simon Little");
+    expect(
+      getArticleAttribution({
+        author: "serendipity@perrotta.dev Thiago Perrotta",
+        site_name: "Thiago's notes",
+      }).primary
+    ).toBe("Thiago Perrotta");
   });
 });
 
-describe("muted author persistence", () => {
+describe("author preference and exposure persistence", () => {
   test("migrates and backfills existing bylines", async () => {
     const db = await getDb();
     const version = await db.getFirstAsync<{ user_version: number }>(
@@ -112,8 +141,14 @@ describe("muted author persistence", () => {
       ["https://legacy.example/essay"]
     );
 
-    expect(version?.user_version).toBeGreaterThanOrEqual(6);
+    expect(version?.user_version).toBeGreaterThanOrEqual(13);
     expect(row?.author_key).toBe("joan robinson");
+    expect(await getIdentityExposure("author", "joan robinson")).toEqual({
+      identity_kind: "author",
+      identity_key: "joan robinson",
+      exposure_count: 1,
+      last_exposed_at: 123456,
+    });
   });
 
   test("normalizes bylines, persists the mute, and supports unmuting", async () => {
@@ -179,5 +214,167 @@ describe("muted author persistence", () => {
     );
 
     expect(row?.author_key).toBe(normalizeAuthorKey("Grace Hopper"));
+  });
+
+  test("records each article exposure once for its person and publication", async () => {
+    const firstId = await upsertArticleMeta({
+      sourceId: null,
+      url: "https://person-first.example/one",
+      title: "First essay",
+      author: "Elinor Ostrom",
+      siteName: "Institutional Notes",
+      publishedDate: Date.now(),
+      excerpt: "",
+      topic: "economics",
+      score: 0.5,
+    });
+    const secondId = await upsertArticleMeta({
+      sourceId: null,
+      url: "https://person-first.example/two",
+      title: "Second essay",
+      author: "Elinor Ostrom",
+      siteName: "Institutional Notes",
+      publishedDate: Date.now(),
+      excerpt: "",
+      topic: "economics",
+      score: 0.5,
+    });
+    expect(firstId).not.toBeNull();
+    expect(secondId).not.toBeNull();
+
+    await markRead(firstId!);
+    await markRead(firstId!); // restored/backtracked card: not a new exposure
+    await markRead(secondId!);
+
+    const author = await getIdentityExposure("author", "elinor ostrom");
+    const domain = await getIdentityExposure("domain", "person-first.example");
+    expect(author?.exposure_count).toBe(2);
+    expect(domain?.exposure_count).toBe(2);
+    expect(author?.last_exposed_at).toBeGreaterThan(0);
+    expect(domain?.last_exposed_at).toBe(author?.last_exposed_at);
+
+    const db = await getDb();
+    await db.runAsync("DELETE FROM articles WHERE id IN (?, ?)", [
+      firstId!,
+      secondId!,
+    ]);
+    expect(
+      (await getIdentityExposure("author", "elinor ostrom"))?.exposure_count
+    ).toBe(2);
+  });
+
+  test("the real deque cools a previously exposed person across domains", async () => {
+    const seenId = await upsertArticleMeta({
+      sourceId: null,
+      url: "https://old-home.example/seen",
+      title: "Seen essay",
+      author: "Persistent Person",
+      siteName: "Old Home",
+      publishedDate: Date.now(),
+      excerpt: "economics policy markets incentives",
+      topic: "economics",
+      score: 0.8,
+    });
+    const familiarId = await upsertArticleMeta({
+      sourceId: null,
+      url: "https://new-home.example/familiar",
+      title: "Familiar person at a new publication",
+      author: "Persistent Person",
+      siteName: "New Home",
+      publishedDate: Date.now(),
+      excerpt: "economics policy markets incentives",
+      topic: "economics",
+      score: 0.9,
+    });
+    const freshIds = await Promise.all(
+      ["Fresh One", "Fresh Two", "Fresh Three"].map((author, index) =>
+        upsertArticleMeta({
+          sourceId: null,
+          url: `https://fresh-${index}.example/essay`,
+          title: `${author} essay`,
+          author,
+          siteName: `Fresh ${index}`,
+          publishedDate: Date.now(),
+          excerpt: "economics policy markets incentives",
+          topic: "economics",
+          score: 0.4,
+        })
+      )
+    );
+    expect(seenId).not.toBeNull();
+    expect(familiarId).not.toBeNull();
+    expect(freshIds.every((id) => id != null)).toBe(true);
+
+    for (const id of [seenId!, familiarId!, ...freshIds.map((id) => id!)]) {
+      await setArticleContent(id, {
+        wordCount: 900,
+        quality: id === familiarId ? 0.95 : 0.6,
+        topic: "economics",
+        topicRelevance: 0.95,
+      });
+    }
+    await markRead(seenId!);
+
+    const deque = await loadDeque();
+    const familiarIndex = deque.indexOf(familiarId!);
+    const freshIndices = freshIds.map((id) => deque.indexOf(id!));
+    expect(familiarIndex).toBeGreaterThan(-1);
+    expect(freshIndices.every((index) => index >= 0)).toBe(true);
+    expect(Math.max(...freshIndices)).toBeLessThan(familiarIndex);
+  });
+
+  test("a prolific publication cannot consume the SQL candidate limit", async () => {
+    const db = await getDb();
+    const longTailIds: number[] = [];
+    await db.withTransactionAsync(async () => {
+      for (let index = 0; index < 400; index++) {
+        await db.runAsync(
+          `INSERT INTO articles (
+             url, title, author, author_key, site_name, site_domain,
+             published_date, excerpt, word_count, topic, topic_relevance,
+             fetched_at, score, quality
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, '', 900, 'economics', 0.95, ?, 0.9, 0.98)`,
+          [
+            `https://prolific.example/essay-${index}`,
+            `Prolific essay ${index}`,
+            `Writer ${index}`,
+            `writer ${index}`,
+            "Prolific",
+            "prolific.example",
+            Date.now(),
+            Date.now(),
+          ]
+        );
+      }
+      for (let index = 0; index < 12; index++) {
+        const result = await db.runAsync(
+          `INSERT INTO articles (
+             url, title, author, author_key, site_name, site_domain,
+             published_date, excerpt, word_count, topic, topic_relevance,
+             fetched_at, score, quality
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, '', 900, 'economics', 0.95, ?, 0.4, 0.55)`,
+          [
+            `https://long-tail-${index}.example/essay`,
+            `Long-tail essay ${index}`,
+            `Long-tail writer ${index}`,
+            `long-tail writer ${index}`,
+            `Long Tail ${index}`,
+            `long-tail-${index}.example`,
+            Date.now(),
+            Date.now(),
+          ]
+        );
+        longTailIds.push(result.lastInsertRowId);
+      }
+    });
+
+    const deque = await loadDeque();
+    expect(longTailIds.every((id) => deque.includes(id))).toBe(true);
+    const firstDomains = await db.getAllAsync<{ site_domain: string }>(
+      `SELECT DISTINCT site_domain FROM articles
+       WHERE id IN (${deque.slice(0, 12).map(() => "?").join(", ")})`,
+      deque.slice(0, 12)
+    );
+    expect(firstDomains).toHaveLength(12);
   });
 });

@@ -1,8 +1,11 @@
 import { getDb, kvGet, TOPICS, type Topic } from "./db";
 import { refreshIfNeeded } from "./crawler/engine";
 import { MIN_TOPIC_RELEVANCE } from "./crawler/topic";
-import { buildDiverseSlate, deferRecentlySeen } from "./recommend";
-import { exposureGeneration } from "./exposure";
+import {
+  buildDiverseSlate,
+  coolByPersistentExposure,
+  type PersistentExposureCandidate,
+} from "./recommend";
 
 // The deque: an ordered stream of article ids backed entirely by SQLite.
 // SQLite produces a generously sized, relevance-weighted candidate pool.
@@ -15,8 +18,10 @@ const MIN_WORDS = 250;
 // local SQLite reads, so precomputing 60 cards only adds ranking work and
 // memory without improving perceived responsiveness.
 const WINDOW_SIZE = 36;
-const CANDIDATE_POOL_SIZE = WINDOW_SIZE * 4;
-const RECENT_EXPOSURE_WINDOW = 12;
+// Consider ten screens, identity-round-robin, before the JS slate pass. This
+// is wide enough for the long tail without letting a prolific publication's
+// hundreds of posts crowd those writers out before diversity rules run.
+const CANDIDATE_POOL_SIZE = WINDOW_SIZE * 10;
 export const LOW_WATER = 12;
 
 // Freshness contract: the reader is a "what's new worth reading" surface.
@@ -27,6 +32,8 @@ export const LOW_WATER = 12;
 // - Relevance: an article must contain evidence for its classified topic. A
 //   feed label alone never makes an off-topic post eligible.
 // - Preferences: selected topics and muted bylines are hard filters.
+// - Exposure: durable author/publication counts cool familiar identities;
+//   bylines carry more weight than sites and follow people across domains.
 const STALE_DAYS = 90;
 const HALF_LIFE_DAYS = 14;
 
@@ -34,40 +41,7 @@ export interface DequeState {
   ids: number[];
 }
 
-interface CandidateRow {
-  id: number;
-  topic: Topic;
-  authorKey: string;
-  domain: string;
-}
-
-let recentExposureCache: {
-  generation: number;
-  rows: CandidateRow[];
-} | null = null;
-
-async function getRecentExposure(
-  db: Awaited<ReturnType<typeof getDb>>
-): Promise<CandidateRow[]> {
-  const generation = exposureGeneration();
-  if (recentExposureCache?.generation === generation) {
-    return recentExposureCache.rows;
-  }
-
-  const rows = await db.getAllAsync<CandidateRow>(
-    `SELECT a.id,
-            COALESCE(a.topic, 'technology') AS topic,
-            a.author_key AS authorKey,
-            COALESCE(NULLIF(a.site_domain, ''), 'source:' || a.source_id, 'article:' || a.id) AS domain
-     FROM articles AS a
-     WHERE a.is_read = 1 AND a.read_at IS NOT NULL
-     ORDER BY a.read_at DESC
-     LIMIT ?`,
-    [RECENT_EXPOSURE_WINDOW]
-  );
-  recentExposureCache = { generation, rows };
-  return rows;
-}
+type CandidateRow = PersistentExposureCandidate;
 
 function weightedCandidateQuery(topicCount: number): string {
   const ageDays =
@@ -77,24 +51,56 @@ function weightedCandidateQuery(topicCount: number): string {
   const trust = `(0.75 + 0.5 * MIN(MAX(a.score, 0.0), 1.0))`;
   const relevance = `(0.35 + 0.65 * a.topic_relevance)`;
   const key = `(MAX(a.quality, 0.05) * ${relevance} * ${recency} * ${trust} * ${uniform})`;
+  const domain =
+    `COALESCE(NULLIF(a.site_domain, ''), ` +
+    `CASE WHEN a.source_id IS NOT NULL THEN 'source:' || a.source_id ` +
+    `ELSE 'article:' || a.id END)`;
+  const voice = `COALESCE(NULLIF(a.author_key, ''), ${domain})`;
   const topicSlots = Array.from({ length: topicCount }, () => "?").join(", ");
   return `
-    SELECT a.id,
-           a.topic,
-           a.author_key AS authorKey,
-           COALESCE(NULLIF(a.site_domain, ''), 'source:' || a.source_id, 'article:' || a.id) AS domain
-    FROM articles AS a
-    WHERE a.is_archived = 0 AND a.is_read = 0
-      AND a.word_count >= ${MIN_WORDS}
-      AND a.topic_relevance >= ?
-      AND a.topic IN (${topicSlots})
-      AND COALESCE(a.published_date, a.fetched_at)
-            > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
-      AND NOT EXISTS (
-        SELECT 1 FROM muted_authors AS muted
-        WHERE a.author_key != '' AND muted.author_key = a.author_key
-      )
-    ORDER BY ${key} DESC
+    WITH eligible AS MATERIALIZED (
+      SELECT a.id,
+             a.topic,
+             a.author_key AS authorKey,
+             ${domain} AS domain,
+             ${voice} AS voice_key,
+             ${key} AS ranking_key,
+             COALESCE(author_exposure.exposure_count, 0) AS authorExposureCount,
+             author_exposure.last_exposed_at AS authorLastExposedAt,
+             COALESCE(domain_exposure.exposure_count, 0) AS domainExposureCount,
+             domain_exposure.last_exposed_at AS domainLastExposedAt
+      FROM articles AS a
+      LEFT JOIN identity_exposures AS author_exposure
+        ON author_exposure.identity_kind = 'author'
+       AND author_exposure.identity_key = a.author_key
+      LEFT JOIN identity_exposures AS domain_exposure
+        ON domain_exposure.identity_kind = 'domain'
+       AND domain_exposure.identity_key = ${domain}
+      WHERE a.is_archived = 0 AND a.is_read = 0
+        AND a.word_count >= ${MIN_WORDS}
+        AND a.topic_relevance >= ?
+        AND a.topic IN (${topicSlots})
+        AND COALESCE(a.published_date, a.fetched_at)
+              > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
+        AND NOT EXISTS (
+          SELECT 1 FROM muted_authors AS muted
+          WHERE a.author_key != '' AND muted.author_key = a.author_key
+        )
+    ), identity_ranked AS (
+      SELECT eligible.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY voice_key ORDER BY ranking_key DESC
+             ) AS rank_in_voice,
+             ROW_NUMBER() OVER (
+               PARTITION BY domain ORDER BY ranking_key DESC
+             ) AS rank_in_domain
+      FROM eligible
+    )
+    SELECT id, topic, authorKey, domain,
+           authorExposureCount, authorLastExposedAt,
+           domainExposureCount, domainLastExposedAt
+    FROM identity_ranked
+    ORDER BY MAX(rank_in_voice, rank_in_domain), ranking_key DESC
     LIMIT ?`;
 }
 
@@ -106,8 +112,7 @@ export async function loadDeque(): Promise<number[]> {
     weightedCandidateQuery(selectedTopics.length),
     [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE]
   );
-  const recent = await getRecentExposure(db);
-  const exposureAdjusted = deferRecentlySeen(rows, recent);
+  const exposureAdjusted = coolByPersistentExposure(rows);
   return buildDiverseSlate(exposureAdjusted, WINDOW_SIZE, selectedTopics).map(
     (row) => row.id
   );

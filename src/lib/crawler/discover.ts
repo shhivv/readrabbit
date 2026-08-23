@@ -3,8 +3,13 @@ import {
   looksLikeArticlePath,
   rootDomain,
 } from "./classify";
-import { discoverFeedUrl, parseFeed, parseSyndicationDocument } from "./feeds";
-import { fetchText, getHost, HostScheduler } from "./fetcher";
+import {
+  discoverFeedUrl,
+  parseFeed,
+  parseSyndicationDocument,
+  type FeedEntry,
+} from "./feeds";
+import { fetchText, HostScheduler } from "./fetcher";
 import {
   getDb,
   kvGetJson,
@@ -32,6 +37,29 @@ const CANDIDATES_KEY = "disco:candidates";
 const REJECTED_KEY = "disco:rejected";
 const HN_LAST_KEY = "disco:hn_last_at";
 const COMMUNITY_LAST_KEY = "disco:community_last_at";
+const SMALL_WEB_LAST_KEY = "disco:small_web_last_at";
+const REDDIT_ECON_LAST_KEY = "disco:reddit_econ_last_at";
+export const HN_DIRECT_ARTICLE_LIMIT = 12;
+export const SMALL_WEB_DIRECT_ARTICLE_LIMIT = 30;
+export const REDDIT_ECON_DIRECT_ARTICLE_LIMIT = 12;
+
+export interface HnStory {
+  url: string;
+  title: string;
+  publishedAt: number | null;
+}
+
+export interface HnDiscoveryResult {
+  candidateDomainsAdded: number;
+  stories: HnStory[];
+}
+
+export interface SmallWebStory extends HnStory {
+  author: string;
+  topic: Topic;
+}
+
+export type RedditEconomicsStory = SmallWebStory;
 
 // The pool lives in memory during a crawl and is persisted only at phase
 // boundaries (flushCandidates). The old write-through version re-serialized
@@ -156,40 +184,259 @@ export function enqueueCandidates(
   if (changed) poolDirty = true;
 }
 
+// Parse HN separately from its publisher-feed discovery path. A sufficiently
+// popular link is already useful recommendation evidence; requiring the
+// publisher to expose a discoverable RSS feed loses that exact article and
+// biases HN toward prolific sites. Domain classification intentionally does
+// not run here: it still protects long-lived feed discovery, while the HN vote
+// threshold is the curator for these bounded, one-off article fetches.
+export function parseHnStories(
+  data: unknown,
+  limit = HN_DIRECT_ARTICLE_LIMIT
+): HnStory[] {
+  if (!data || typeof data !== "object") return [];
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0) return [];
+  const hits = (data as { hits?: unknown }).hits;
+  if (!Array.isArray(hits)) return [];
+
+  const stories: HnStory[] = [];
+  const seen = new Set<string>();
+  for (const raw of hits) {
+    if (!raw || typeof raw !== "object") continue;
+    const hit = raw as {
+      url?: unknown;
+      title?: unknown;
+      created_at_i?: unknown;
+      created_at?: unknown;
+    };
+    if (typeof hit.url !== "string" || typeof hit.title !== "string") continue;
+    const title = hit.title.trim();
+    if (!title) continue;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(hit.url);
+    } catch {
+      continue;
+    }
+    if (!/^https?:$/.test(parsed.protocol)) continue;
+    const host = parsed.host.toLowerCase();
+    if (host === "news.ycombinator.com" || host.endsWith(".news.ycombinator.com")) {
+      continue;
+    }
+    if (host === "hnrss.org" || host.endsWith(".hnrss.org")) continue;
+    parsed.hash = "";
+    const url = parsed.toString();
+    if (seen.has(url)) continue;
+    seen.add(url);
+
+    let publishedAt: number | null = null;
+    if (
+      typeof hit.created_at_i === "number" &&
+      Number.isFinite(hit.created_at_i) &&
+      hit.created_at_i > 0
+    ) {
+      publishedAt = Math.trunc(hit.created_at_i * 1000);
+    } else if (typeof hit.created_at === "string") {
+      const parsedDate = Date.parse(hit.created_at);
+      if (!Number.isNaN(parsedDate)) publishedAt = parsedDate;
+    }
+
+    stories.push({ url, title, publishedAt });
+    if (stories.length >= boundedLimit) break;
+  }
+  return stories;
+}
+
 export async function hnDiscover(
   selectedTopics?: readonly Topic[]
-): Promise<number> {
+): Promise<HnDiscoveryResult> {
   const selected = selectedTopics
     ? new Set(selectedTopics)
     : await activeTopics();
-  if (!selected.has("technology")) return 0;
+  if (!selected.has("technology")) {
+    return { candidateDomainsAdded: 0, stories: [] };
+  }
 
   const last = (await kvGetJson<number>(HN_LAST_KEY)) ?? 0;
-  if (Date.now() - last < 12 * 60 * 60 * 1000) return 0;
+  if (Date.now() - last < 12 * 60 * 60 * 1000) {
+    return { candidateDomainsAdded: 0, stories: [] };
+  }
 
   const weekAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
   const url = `https://hn.algolia.com/api/v1/search_by_date?tags=story&numericFilters=created_at_i>${weekAgo},points>70&hitsPerPage=60`;
   try {
     const res = await fetchText(url, { timeoutMs: 15000 });
-    if (!res.ok) return 0;
-    const data = JSON.parse(res.text) as {
-      hits?: Array<{ url?: string | null; title?: string }>;
-    };
-    // Self-posts link back to HN itself; they'd otherwise enter discovery
-    // as "news.ycombinator.com" and pollute the candidate pool.
-    const links = (data.hits ?? [])
-      .filter((hit) => hit.url && hit.title)
-      .map((hit) => ({ url: hit.url as string }))
-      .filter((link) => {
-        const host = getHost(link.url);
-        return host != null && !host.endsWith("news.ycombinator.com") && !host.endsWith("hnrss.org");
-      });
+    if (!res.ok) return { candidateDomainsAdded: 0, stories: [] };
+    const data = JSON.parse(res.text) as unknown;
+    // Keep enough links for secondary publisher-feed discovery, while only a
+    // small first slice is persisted for same-crawl article enrichment.
+    const allStories = parseHnStories(data, 60);
+    const links = allStories.map((story) => ({ url: story.url }));
     await kvSetJson(HN_LAST_KEY, Date.now());
     const before = Object.keys(await loadCandidates()).length;
     enqueueCandidates(links, "hn");
-    return Object.keys(poolCache ?? {}).length - before;
+    return {
+      candidateDomainsAdded: Object.keys(poolCache ?? {}).length - before,
+      stories: allStories.slice(0, HN_DIRECT_ARTICLE_LIMIT),
+    };
   } catch {
-    return 0;
+    return { candidateDomainsAdded: 0, stories: [] };
+  }
+}
+
+// Kagi Small Web is a bounded, public Atom feed of independent sites. It is
+// deliberately article-only: one appearance earns one article fetch, not a
+// permanent subscription to the publisher that would recreate feed
+// concentration. The feed's dates can reflect rediscovery rather than the
+// original publication, so page extraction remains the date authority.
+export function selectSmallWebStories(
+  entries: readonly FeedEntry[],
+  selectedTopics: readonly Topic[],
+  limit = SMALL_WEB_DIRECT_ARTICLE_LIMIT
+): SmallWebStory[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0 || selectedTopics.length === 0) return [];
+  const topicHint = selectedTopics.length === 1
+    ? selectedTopics[0]
+    : "technology";
+  const stories: SmallWebStory[] = [];
+  const seenUrls = new Set<string>();
+  const seenDomains = new Set<string>();
+
+  for (const entry of entries) {
+    if (!entry.title.trim() || !looksLikeArticlePath(entry.url)) continue;
+    let domain: string;
+    try {
+      domain = rootDomain(new URL(entry.url).host);
+    } catch {
+      continue;
+    }
+    if (!domain || seenDomains.has(domain) || seenUrls.has(entry.url)) continue;
+    seenDomains.add(domain);
+    seenUrls.add(entry.url);
+    stories.push({
+      url: entry.url,
+      title: entry.title.trim(),
+      author: entry.author.trim(),
+      publishedAt: null,
+      topic: topicHint,
+    });
+    if (stories.length >= boundedLimit) break;
+  }
+  return stories;
+}
+
+export async function smallWebDiscover(
+  selectedTopics?: readonly Topic[]
+): Promise<SmallWebStory[]> {
+  const selected = selectedTopics
+    ? [...selectedTopics]
+    : [...(await activeTopics())];
+  if (selected.length === 0) return [];
+
+  const last = (await kvGetJson<number>(SMALL_WEB_LAST_KEY)) ?? 0;
+  if (Date.now() - last < 6 * 60 * 60 * 1000) return [];
+
+  try {
+    const url = "https://kagi.com/api/v1/smallweb/feed/?limit=60";
+    const res = await fetchText(url, { timeoutMs: 15_000 });
+    if (!res.ok || !res.text) return [];
+    const feed = parseSyndicationDocument(res.text, res.finalUrl || url);
+    if (!feed?.entries.length) return [];
+    const stories = selectSmallWebStories(feed.entries, selected);
+    await kvSetJson(SMALL_WEB_LAST_KEY, Date.now());
+    return stories;
+  } catch {
+    return [];
+  }
+}
+
+function isRedditInfrastructure(host: string): boolean {
+  const normalized = host.replace(/^www\./, "").toLowerCase();
+  return (
+    normalized === "reddit.com" ||
+    normalized.endsWith(".reddit.com") ||
+    normalized === "redd.it" ||
+    normalized.endsWith(".redd.it") ||
+    normalized.endsWith("redditmedia.com") ||
+    normalized.endsWith("redditstatic.com")
+  );
+}
+
+// Reddit's Atom alternate link is the discussion page; the destination
+// article lives inside the HTML content. The submitter is not the article
+// author, so byline remains empty until page extraction.
+export function selectRedditEconomicsStories(
+  entries: readonly FeedEntry[],
+  limit = REDDIT_ECON_DIRECT_ARTICLE_LIMIT
+): RedditEconomicsStory[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0) return [];
+  const stories: RedditEconomicsStory[] = [];
+  const seenDomains = new Set<string>();
+
+  for (const entry of entries) {
+    const anchors = entry.summaryHtml.matchAll(/href=["']([^"']+)["']/gi);
+    let destination = "";
+    let domain = "";
+    for (const match of anchors) {
+      try {
+        const parsed = new URL(match[1].replace(/&amp;/gi, "&"), entry.url);
+        if (!/^https?:$/.test(parsed.protocol) || isRedditInfrastructure(parsed.host)) {
+          continue;
+        }
+        if (!looksLikeArticlePath(parsed.toString())) continue;
+        const candidateDomain = rootDomain(parsed.host);
+        if (!candidateDomain || seenDomains.has(candidateDomain)) continue;
+        parsed.hash = "";
+        destination = parsed.toString();
+        domain = candidateDomain;
+        break;
+      } catch {}
+    }
+    if (!destination || !entry.title.trim()) continue;
+    seenDomains.add(domain);
+    stories.push({
+      url: destination,
+      title: entry.title.trim(),
+      author: "",
+      publishedAt: entry.publishedAt,
+      topic: "economics",
+    });
+    if (stories.length >= boundedLimit) break;
+  }
+  return stories;
+}
+
+export async function redditEconomicsDiscover(
+  selectedTopics?: readonly Topic[]
+): Promise<RedditEconomicsStory[]> {
+  const selected = selectedTopics
+    ? new Set(selectedTopics)
+    : await activeTopics();
+  if (!selected.has("economics")) return [];
+
+  const last = (await kvGetJson<number>(REDDIT_ECON_LAST_KEY)) ?? 0;
+  if (Date.now() - last < 12 * 60 * 60 * 1000) return [];
+
+  try {
+    const url =
+      "https://www.reddit.com/r/Economics/.rss?sort=top&t=week&limit=25";
+    const res = await fetchText(url, { timeoutMs: 15_000 });
+    if (!res.ok || !res.text) return [];
+    const feed = parseSyndicationDocument(res.text, res.finalUrl || url);
+    if (!feed?.entries.length) return [];
+    const stories = selectRedditEconomicsStories(feed.entries);
+    if (stories.length > 0) {
+      await kvSetJson(REDDIT_ECON_LAST_KEY, Date.now());
+    }
+    return stories;
+  } catch {
+    // Reddit rate-limits shared IPs intermittently; this channel is optional
+    // and retries next crawl without delaying the rest of the reader.
+    return [];
   }
 }
 
@@ -447,9 +694,10 @@ export async function probeTopCandidates(
 
   const ranked = Object.entries(pool)
     .filter(([domain]) => rejected[domain] == null)
-    // outbound candidates need ≥2 independent citations: single-link
-    // accidents are how share widgets and vendor pages got in before.
-    .filter(([, c]) => c.origin === "hn" || c.origin === "aggregator" || c.count >= 2)
+    // A one-off community appearance earns its article a chance, not a
+    // permanent subscription to the whole publisher. Only topic-specific
+    // aggregators bypass the two-citation promotion threshold.
+    .filter(([, c]) => c.origin === "aggregator" || c.count >= 2)
     .sort((a, b) => b[1].count - a[1].count);
 
   const db = await getDb();

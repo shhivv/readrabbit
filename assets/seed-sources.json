@@ -36,6 +36,8 @@
   { "name": "Jeff Atwood (Coding Horror)", "siteUrl": "https://blog.codinghorror.com", "feedUrl": "https://blog.codinghorror.com/rss/", "topic": "technology" },
   { "name": "Bob Nystrom", "siteUrl": "https://journal.stuffwithstuff.com", "feedUrl": "https://journal.stuffwithstuff.com/atom.xml", "topic": "technology" },
   { "name": "Paul Graham", "siteUrl": "https://www.paulgraham.com", "feedUrl": "https://www.aaronsw.com/2002/feeds/pgessays.rss", "topic": "technology" },
+  { "name": "Lobsters", "siteUrl": "https://lobste.rs", "feedUrl": "https://lobste.rs/rss", "topic": "technology", "origin": "aggregator" },
+  { "name": "Planet Python", "siteUrl": "https://planetpython.org", "feedUrl": "https://planetpython.org/rss20.xml", "topic": "technology", "origin": "aggregator" },
 
   { "name": "Marginal Revolution", "siteUrl": "https://marginalrevolution.com", "feedUrl": "https://marginalrevolution.com/feed", "topic": "economics" },
   { "name": "John Cochrane (The Grumpy Economist)", "siteUrl": "https://johnhcochrane.blogspot.com", "feedUrl": "https://johnhcochrane.blogspot.com/feeds/posts/default?alt=rss", "topic": "economics" },
@@ -68,5 +70,6 @@
   { "name": "Computational Complexity", "siteUrl": "https://blog.computationalcomplexity.org", "feedUrl": "https://blog.computationalcomplexity.org/feeds/posts/default?alt=rss", "topic": "math" },
   { "name": "Not Even Wrong", "siteUrl": "https://www.math.columbia.edu/~woit/wordpress", "feedUrl": "https://www.math.columbia.edu/~woit/wordpress/?feed=rss2", "topic": "math" },
   { "name": "Quomodocumque", "siteUrl": "https://quomodocumque.wordpress.com", "feedUrl": "https://quomodocumque.wordpress.com/feed/", "topic": "math" },
-  { "name": "Mathblogging.org", "siteUrl": "https://mathblogging.org", "feedUrl": "https://mathblogging.org/posts.xml", "topic": "math", "origin": "aggregator" }
+  { "name": "Mathblogging.org", "siteUrl": "https://mathblogging.org", "feedUrl": "https://mathblogging.org/posts.xml", "topic": "math", "origin": "aggregator" },
+  { "name": "Lobsters Mathematics", "siteUrl": "https://lobste.rs/t/math", "feedUrl": "https://lobste.rs/t/math.rss", "topic": "math", "origin": "aggregator" }
 ]

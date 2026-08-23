@@ -211,11 +211,15 @@ const TRACKING_PARAM = /^(utm_|fbclid$|gclid$|mc_cid$|mc_eid$|ref_src$|ref_url$|
 function stripTrackingParams(url: string): string {
   try {
     const parsed = new URL(url);
-    if (![...parsed.searchParams.keys()].some((k) => TRACKING_PARAM.test(k))) {
+    const isMedium =
+      parsed.hostname === "medium.com" || parsed.hostname.endsWith(".medium.com");
+    const isTracking = (key: string) =>
+      TRACKING_PARAM.test(key) || (isMedium && key === "source");
+    if (![...parsed.searchParams.keys()].some(isTracking)) {
       return url;
     }
     for (const key of [...parsed.searchParams.keys()]) {
-      if (TRACKING_PARAM.test(key)) parsed.searchParams.delete(key);
+      if (isTracking(key)) parsed.searchParams.delete(key);
     }
     const qs = parsed.searchParams.toString();
     return `${parsed.origin}${parsed.pathname}${qs ? `?${qs}` : ""}`;

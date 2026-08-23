@@ -4,7 +4,6 @@ import { convertLatexImages, renderMathInHtml } from "./crawler/math";
 import { cleanAuthorName, normalizeAuthorKey } from "./attribution";
 import { assessTopic } from "./crawler/topic";
 import { isLowValueRoundup } from "./crawler/editorial";
-import { noteExposureChanged } from "./exposure";
 
 export { normalizeAuthorKey } from "./attribution";
 
@@ -63,6 +62,15 @@ export interface MutedAuthorRow {
   muted_at: number;
 }
 
+export type ExposureIdentityKind = "author" | "domain";
+
+export interface IdentityExposureRow {
+  identity_kind: ExposureIdentityKind;
+  identity_key: string;
+  exposure_count: number;
+  last_exposed_at: number;
+}
+
 export interface InterestRow {
   id: number;
   article_id: number;
@@ -71,7 +79,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 11;
+const DB_VERSION = 13;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -452,8 +460,8 @@ async function migrate(db: SQLite.SQLiteDatabase) {
 
   // v11: link roundups are discovery material, not reader cards. Archive
   // previously ingested recurring series (notably Martin Fowler's
-  // "Fragments") and index the small rolling exposure query used to keep
-  // publication diversity stable across app restarts.
+  // "Fragments"). The recent-read index supported the original rolling
+  // history query and is retired by v12's compact identity aggregates.
   if (version < 11) {
     const articles = await db.getAllAsync<{ id: number; title: string }>(
       "SELECT id, title FROM articles WHERE is_archived = 0"
@@ -475,6 +483,85 @@ async function migrate(db: SQLite.SQLiteDatabase) {
         ON articles (is_read, read_at DESC);
     `);
     version = 11;
+  }
+
+  // v12: compact, durable exposure memory. Read article rows can eventually
+  // be pruned under the storage ceiling; these tiny aggregates retain the
+  // person's author/publication history across restarts and app upgrades.
+  if (version < 12) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS identity_exposures (
+        identity_kind TEXT NOT NULL CHECK(identity_kind IN ('author', 'domain')),
+        identity_key TEXT NOT NULL,
+        exposure_count INTEGER NOT NULL DEFAULT 0,
+        last_exposed_at INTEGER NOT NULL,
+        PRIMARY KEY (identity_kind, identity_key)
+      ) WITHOUT ROWID;
+
+      DROP INDEX IF EXISTS idx_articles_recent_read;
+
+      INSERT INTO identity_exposures
+        (identity_kind, identity_key, exposure_count, last_exposed_at)
+      SELECT 'author', author_key, COUNT(*), MAX(read_at)
+      FROM articles
+      WHERE is_read = 1 AND read_at IS NOT NULL AND author_key != ''
+      GROUP BY author_key
+      ON CONFLICT(identity_kind, identity_key) DO UPDATE SET
+        exposure_count = MAX(identity_exposures.exposure_count, excluded.exposure_count),
+        last_exposed_at = MAX(identity_exposures.last_exposed_at, excluded.last_exposed_at);
+
+      INSERT INTO identity_exposures
+        (identity_kind, identity_key, exposure_count, last_exposed_at)
+      SELECT 'domain',
+             COALESCE(NULLIF(site_domain, ''),
+                      CASE WHEN source_id IS NOT NULL THEN 'source:' || source_id
+                           ELSE 'article:' || id END),
+             COUNT(*),
+             MAX(read_at)
+      FROM articles
+      WHERE is_read = 1 AND read_at IS NOT NULL
+      GROUP BY COALESCE(NULLIF(site_domain, ''),
+                        CASE WHEN source_id IS NOT NULL THEN 'source:' || source_id
+                             ELSE 'article:' || id END)
+      ON CONFLICT(identity_kind, identity_key) DO UPDATE SET
+        exposure_count = MAX(identity_exposures.exposure_count, excluded.exposure_count),
+        last_exposed_at = MAX(identity_exposures.last_exposed_at, excluded.last_exposed_at);
+    `);
+    version = 12;
+  }
+
+  // v13: community feeds identify submitters and transport accounts as if
+  // they were article authors. Re-clean stored bylines before rebuilding the
+  // author exposure aggregates so mute/cooldown identity follows people.
+  if (version < 13) {
+    const articles = await db.getAllAsync<{
+      id: number;
+      author: string;
+      author_key: string;
+    }>("SELECT id, author, author_key FROM articles WHERE author != ''");
+    await db.withTransactionAsync(async () => {
+      for (const article of articles) {
+        const author = cleanAuthorName(article.author);
+        const authorKey = normalizeAuthorKey(author);
+        if (author !== article.author || authorKey !== article.author_key) {
+          await db.runAsync(
+            "UPDATE articles SET author = ?, author_key = ? WHERE id = ?",
+            [author, authorKey, article.id]
+          );
+        }
+      }
+    });
+
+    await db.execAsync(`
+      DELETE FROM identity_exposures WHERE identity_kind = 'author';
+      INSERT INTO identity_exposures
+        (identity_kind, identity_key, exposure_count, last_exposed_at)
+      SELECT 'author', author_key, COUNT(*), MAX(read_at)
+      FROM articles
+      WHERE is_read = 1 AND read_at IS NOT NULL AND author_key != ''
+      GROUP BY author_key;
+    `);
+    version = 13;
   }
 
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);
@@ -704,6 +791,7 @@ export async function upsertArticleMeta(input: {
   // new — the engine relies on that for adaptive feed polling. Backfill of
   // title/date on known entries costs a second round-trip only on re-crawls.
   const db = await getDb();
+  const author = cleanAuthorName(input.author);
   let siteDomain = "";
   try {
     siteDomain = rootDomain(new URL(input.url).host);
@@ -718,8 +806,8 @@ export async function upsertArticleMeta(input: {
       input.sourceId,
       input.url,
       input.title,
-      input.author,
-      normalizeAuthorKey(input.author),
+      author,
+      normalizeAuthorKey(author),
       input.siteName,
       input.publishedDate,
       input.excerpt,
@@ -741,10 +829,10 @@ export async function upsertArticleMeta(input: {
     [
       input.title,
       input.title,
-      input.author,
-      input.author,
-      input.author,
-      normalizeAuthorKey(input.author),
+      author,
+      author,
+      author,
+      normalizeAuthorKey(author),
       input.publishedDate,
       input.url,
     ]
@@ -770,7 +858,7 @@ export async function setArticleContent(
   }
 ): Promise<void> {
   const db = await getDb();
-  const author = content.author ?? "";
+  const author = cleanAuthorName(content.author ?? "");
   await db.runAsync(
     `UPDATE articles SET
        title = COALESCE(NULLIF(?, ''), title),
@@ -845,11 +933,64 @@ export async function getArticleById(id: number): Promise<ArticleRow | null> {
 
 export async function markRead(articleId: number): Promise<void> {
   const db = await getDb();
-  await db.runAsync(
-    "UPDATE articles SET is_read = 1, read_at = ? WHERE id = ?",
-    [Date.now(), articleId]
+  const exposedAt = Date.now();
+  const result = await db.runAsync(
+    `UPDATE articles
+     SET is_read = 1, read_at = ?
+     WHERE id = ? AND (is_read = 0 OR read_at IS NULL)`,
+    [exposedAt, articleId]
   );
-  noteExposureChanged();
+  // Back navigation and restored cards must not inflate exposure counts.
+  if (result.changes === 0) return;
+
+  const article = await db.getFirstAsync<{
+    id: number;
+    source_id: number | null;
+    author_key: string;
+    site_domain: string;
+  }>(
+    "SELECT id, source_id, author_key, site_domain FROM articles WHERE id = ?",
+    [articleId]
+  );
+  if (!article) return;
+
+  const domainKey =
+    article.site_domain ||
+    (article.source_id != null
+      ? `source:${article.source_id}`
+      : `article:${article.id}`);
+  const identities: [ExposureIdentityKind, string][] = [
+    ["domain", domainKey],
+  ];
+  if (article.author_key) identities.unshift(["author", article.author_key]);
+
+  await db.withTransactionAsync(async () => {
+    for (const [kind, key] of identities) {
+      await db.runAsync(
+        `INSERT INTO identity_exposures
+           (identity_kind, identity_key, exposure_count, last_exposed_at)
+         VALUES (?, ?, 1, ?)
+         ON CONFLICT(identity_kind, identity_key) DO UPDATE SET
+           exposure_count = identity_exposures.exposure_count + 1,
+           last_exposed_at = excluded.last_exposed_at`,
+        [kind, key, exposedAt]
+      );
+    }
+  });
+}
+
+export async function getIdentityExposure(
+  kind: ExposureIdentityKind,
+  key: string
+): Promise<IdentityExposureRow | null> {
+  if (!key) return null;
+  const db = await getDb();
+  return db.getFirstAsync<IdentityExposureRow>(
+    `SELECT identity_kind, identity_key, exposure_count, last_exposed_at
+     FROM identity_exposures
+     WHERE identity_kind = ? AND identity_key = ?`,
+    [kind, key]
+  );
 }
 
 export async function archiveArticle(articleId: number): Promise<void> {

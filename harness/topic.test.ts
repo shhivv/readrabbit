@@ -84,4 +84,25 @@ describe("article topic relevance", () => {
     expect(result.topic).toBe("technology");
     expect(result.relevance).toBeGreaterThan(MIN_TOPIC_RELEVANCE);
   });
+
+  test("recognizes systems stories surfaced by community feeds", () => {
+    expect(
+      assessTopic(
+        {
+          title: "Wi-Fi 8 changes how wireless home networks work",
+          textContent: "The chipset and firmware coordinate access points.",
+        },
+        "technology"
+      ).relevance
+    ).toBeGreaterThanOrEqual(MIN_TOPIC_RELEVANCE);
+    expect(
+      assessTopic(
+        {
+          title: "NanoGPT speedrun frontier",
+          textContent: "A GPT training implementation optimized for a modern processor.",
+        },
+        "technology"
+      ).relevance
+    ).toBeGreaterThanOrEqual(MIN_TOPIC_RELEVANCE);
+  });
 });

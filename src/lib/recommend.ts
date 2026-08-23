@@ -7,34 +7,95 @@ export interface RecommendationCandidate {
   domain: string;
 }
 
+export interface PersistentExposureCandidate extends RecommendationCandidate {
+  authorExposureCount: number;
+  authorLastExposedAt: number | null;
+  domainExposureCount: number;
+  domainLastExposedAt: number | null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function identityExposurePenalty(
+  count: number,
+  lastExposedAt: number | null,
+  now: number,
+  recencyWeight: number,
+  halfLifeDays: number,
+  historyWeight: number
+): number {
+  if (count <= 0) return 0;
+  const ageDays = lastExposedAt
+    ? Math.max(0, now - lastExposedAt) / DAY_MS
+    : Number.POSITIVE_INFINITY;
+  const recency = Number.isFinite(ageDays)
+    ? Math.pow(0.5, ageDays / halfLifeDays)
+    : 0;
+  // Recency fades, but the tiny log-scaled memory remains: an unseen voice is
+  // still preferable to one that has occupied many cards over the app's life.
+  return (
+    recencyWeight * recency +
+    historyWeight * Math.log2(Math.max(1, count) + 1)
+  );
+}
+
 /**
- * Keep the ranking's quality order inside each group, but place publications
- * and bylines the reader just saw behind genuinely fresh voices. Article rows
- * already persist read_at, so this rolling cooldown survives app restarts
- * without another preference table or write on the navigation hot path.
+ * Person-first persistent cooldown. A byline follows the writer across
+ * publications and therefore carries four times the recency weight of a
+ * publication. Nothing is filtered: when supply is scarce, exposed voices
+ * remain available in least-seen/least-recent order.
  */
-export function deferRecentlySeen<T extends RecommendationCandidate>(
-  orderedCandidates: T[],
-  recentHistory: readonly RecommendationCandidate[]
-): T[] {
-  if (recentHistory.length === 0) return orderedCandidates;
-
-  const domains = new Set(
-    recentHistory.map((row) => row.domain).filter(Boolean)
-  );
-  const authors = new Set(
-    recentHistory.map((row) => row.authorKey).filter(Boolean)
-  );
-  const fresh: T[] = [];
-  const deferred: T[] = [];
-
-  for (const candidate of orderedCandidates) {
-    const recentlySeen =
-      (candidate.domain !== "" && domains.has(candidate.domain)) ||
-      (candidate.authorKey !== "" && authors.has(candidate.authorKey));
-    (recentlySeen ? deferred : fresh).push(candidate);
+export function persistentExposureCost(
+  candidate: PersistentExposureCandidate,
+  now = Date.now()
+): number {
+  // When extraction cannot find a trustworthy byline, the publication is the
+  // voice. Giving that fallback only the weaker domain penalty lets anonymous
+  // prolific feeds recur far more often than named writers.
+  if (!candidate.authorKey && candidate.domain) {
+    return identityExposurePenalty(
+      candidate.domainExposureCount,
+      candidate.domainLastExposedAt,
+      now,
+      100,
+      45,
+      2
+    );
   }
-  return [...fresh, ...deferred];
+  const author = candidate.authorKey
+    ? identityExposurePenalty(
+        candidate.authorExposureCount,
+        candidate.authorLastExposedAt,
+        now,
+        100,
+        45,
+        2
+      )
+    : 0;
+  const domain = candidate.domain
+    ? identityExposurePenalty(
+        candidate.domainExposureCount,
+        candidate.domainLastExposedAt,
+        now,
+        25,
+        21,
+        0.5
+      )
+    : 0;
+  return author + domain;
+}
+
+export function coolByPersistentExposure<
+  T extends PersistentExposureCandidate,
+>(orderedCandidates: readonly T[], now = Date.now()): T[] {
+  return orderedCandidates
+    .map((candidate, rank) => ({
+      candidate,
+      rank,
+      cost: persistentExposureCost(candidate, now),
+    }))
+    .sort((left, right) => left.cost - right.cost || left.rank - right.rank)
+    .map(({ candidate }) => candidate);
 }
 
 interface SelectionState {

@@ -24,6 +24,13 @@ import {
   loadCandidates,
   mineSeedBlogrolls,
   probeTopCandidates,
+  redditEconomicsDiscover,
+  smallWebDiscover,
+  HN_DIRECT_ARTICLE_LIMIT,
+  type HnDiscoveryResult,
+  type HnStory,
+  type RedditEconomicsStory,
+  type SmallWebStory,
 } from "./discover";
 import { extractFromHtml, sanitizeContentHtml, normalizeWhitespace } from "./extract";
 import { isLowValueRoundup } from "./editorial";
@@ -78,6 +85,12 @@ const MIN_FEED_TIER_WORDS = 250;
 // Twelve recent entries is ample between adaptive polls and leaves first-run
 // enrichment capacity for the long tail of sources.
 const MAX_ENTRIES_PER_SOURCE = 12;
+// Community indexes point at many independent publishers. Giving them the
+// personal-feed cap truncates that breadth before publisher-domain fairness
+// gets a chance to operate, while a hard ceiling still bounds XML/DB work.
+const MAX_AGGREGATOR_ENTRIES_PER_SOURCE = 24;
+const HN_ARTICLE_SCORE = 0.5;
+const SMALL_WEB_ARTICLE_SCORE = 0.45;
 
 // Concurrent DOM parses allowed during enrichment (see extract gate below).
 const EXTRACT_CONCURRENCY = 3;
@@ -156,7 +169,27 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
   // candidate pool lives in memory for the whole crawl; flushed at phase ends
   await loadCandidates();
 
+  // HN is a single cheap request and can overlap the slower per-host feed
+  // sweep. Persist its voted article URLs before enrichment so they can become
+  // readable in this crawl; publisher RSS probing remains a secondary path.
+  const hnPromise: Promise<HnDiscoveryResult> =
+    mode === "foreground"
+      ? Promise.resolve({ candidateDomainsAdded: 0, stories: [] })
+      : hnDiscover();
+  const smallWebPromise: Promise<SmallWebStory[]> =
+    mode === "foreground" ? Promise.resolve([]) : smallWebDiscover();
+  const redditEconomicsPromise: Promise<RedditEconomicsStory[]> =
+    mode === "foreground" ? Promise.resolve([]) : redditEconomicsDiscover();
+
   await updateFeeds(network, deadline, mode, onProgress);
+  const [hn, smallWebStories, redditEconomicsStories] = await Promise.all([
+    hnPromise,
+    smallWebPromise,
+    redditEconomicsPromise,
+  ]);
+  await ingestHnStories(hn.stories);
+  await ingestSmallWebStories(smallWebStories);
+  await ingestRedditEconomicsStories(redditEconomicsStories);
   await flushCandidates();
   if (Date.now() < deadline) {
     await enrichArticles(network, deadline, ENRICH_BATCH[mode], onProgress);
@@ -168,7 +201,6 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
     // keeps its share of the remaining budget
     await mineSeedBlogrolls(network, Date.now() + 30_000);
     await flushCandidates();
-    await hnDiscover();
     await communityDiscover();
     await flushCandidates();
     await probeTopCandidates(DISCOVER_PROBES[mode], Date.now() + 60_000);
@@ -179,6 +211,114 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
     pruneStorage().catch(() => {});
   }
   onProgress?.({ phase: "done", done: 1, total: 1 });
+}
+
+type ArticleMetaInput = Parameters<typeof upsertArticleMeta>[0];
+type ArticleMetaWriter = (input: ArticleMetaInput) => Promise<number | null>;
+
+// HN itself is the discovery source, not a permanent feed row. A null
+// source_id lets the article retain its real publisher domain while enrichment
+// fills the byline/site metadata from the linked page.
+export async function ingestHnStories(
+  stories: readonly HnStory[],
+  persist: ArticleMetaWriter = upsertArticleMeta
+): Promise<number> {
+  let inserted = 0;
+  for (const story of stories.slice(0, HN_DIRECT_ARTICLE_LIMIT)) {
+    try {
+      const host = new URL(story.url).host.replace(/^www\./, "");
+      const id = await persist({
+        sourceId: null,
+        url: story.url,
+        title: story.title,
+        author: "",
+        siteName: host,
+        publishedDate: story.publishedAt,
+        excerpt: "",
+        topic: "technology",
+        score: HN_ARTICLE_SCORE,
+      });
+      if (id != null) inserted++;
+    } catch {
+      // One malformed/transient row must not discard the rest of the HN batch.
+    }
+  }
+  return inserted;
+}
+
+export async function ingestSmallWebStories(
+  stories: readonly SmallWebStory[],
+  persist: ArticleMetaWriter = upsertArticleMeta
+): Promise<number> {
+  let inserted = 0;
+  for (const story of stories) {
+    try {
+      const host = new URL(story.url).host.replace(/^www\./, "");
+      const id = await persist({
+        sourceId: null,
+        url: story.url,
+        title: story.title,
+        author: story.author,
+        siteName: host,
+        // Kagi can rediscover old pages under today's feed timestamp. Keep
+        // this null so page extraction can supply the real publication date.
+        publishedDate: null,
+        excerpt: "",
+        topic: story.topic,
+        score: SMALL_WEB_ARTICLE_SCORE,
+      });
+      if (id != null) inserted++;
+    } catch {
+      // Keep the rest of the bounded batch moving.
+    }
+  }
+  return inserted;
+}
+
+export async function ingestRedditEconomicsStories(
+  stories: readonly RedditEconomicsStory[],
+  persist: ArticleMetaWriter = upsertArticleMeta
+): Promise<number> {
+  let inserted = 0;
+  for (const story of stories) {
+    try {
+      const host = new URL(story.url).host.replace(/^www\./, "");
+      const id = await persist({
+        sourceId: null,
+        url: story.url,
+        title: story.title,
+        author: "",
+        siteName: host,
+        publishedDate: story.publishedAt,
+        excerpt: "",
+        topic: "economics",
+        score: SMALL_WEB_ARTICLE_SCORE,
+      });
+      if (id != null) inserted++;
+    } catch {
+      // Optional channel: a malformed entry cannot affect the crawl.
+    }
+  }
+  return inserted;
+}
+
+export function maxEntriesForSourceOrigin(origin: string): number {
+  return origin === "aggregator"
+    ? MAX_AGGREGATOR_ENTRIES_PER_SOURCE
+    : MAX_ENTRIES_PER_SOURCE;
+}
+
+export function siteNameForFeedEntry(
+  origin: string,
+  entryUrl: string,
+  feedTitle: string,
+  sourceName: string
+): string {
+  if (origin === "aggregator") {
+    const host = getHost(entryUrl)?.replace(/^www\./, "");
+    if (host) return host;
+  }
+  return feedTitle || sourceName;
 }
 
 // ---------- phase 1: feeds ----------
@@ -235,7 +375,8 @@ async function updateFeeds(
       // transaction is an fsync, so 30 individual inserts would mean 30
       // syncs; batched they cost one.
       await db.withTransactionAsync(async () => {
-        for (const entry of res.feed!.entries.slice(0, MAX_ENTRIES_PER_SOURCE)) {
+        const entryLimit = maxEntriesForSourceOrigin(source.origin);
+        for (const entry of res.feed!.entries.slice(0, entryLimit)) {
           if (isLowValueRoundup(entry.title)) {
             continue;
           }
@@ -245,12 +386,18 @@ async function updateFeeds(
           ) {
             continue; // stale: never enters the DB
           }
+          const entrySiteName = siteNameForFeedEntry(
+            source.origin,
+            entry.url,
+            res.feed!.title,
+            source.name
+          );
           const inserted = await upsertArticleMeta({
             sourceId: source.id,
             url: entry.url,
             title: entry.title,
             author: entry.author,
-            siteName: res.feed!.title || source.name,
+            siteName: entrySiteName,
             publishedDate: entry.publishedAt,
             excerpt: firstParagraphText(entry.summaryHtml),
             topic: source.topic,
@@ -296,10 +443,16 @@ async function updateFeeds(
           );
           const wordCount = text ? text.split(/\s+/).length : 0;
           if (wordCount < 80) continue; // teaser that snuck past the estimate
+          const entrySiteName = siteNameForFeedEntry(
+            source.origin,
+            entry.url,
+            res.feed!.title,
+            source.name
+          );
           const { quality } = scoreArticleQuality({
             title: entry.title,
             author: entry.author,
-            siteName: res.feed!.title || source.name,
+            siteName: entrySiteName,
             publishedDate: entry.publishedAt,
             excerpt: firstParagraphText(entry.summaryHtml),
             contentHtml: html,
@@ -319,7 +472,7 @@ async function updateFeeds(
             setArticleContent(id, {
               title: entry.title,
               author: entry.author,
-              siteName: res.feed!.title || source.name,
+              siteName: entrySiteName,
               publishedDate: entry.publishedAt,
               excerpt: "",
               contentHtml: html,
@@ -410,8 +563,10 @@ async function enrichArticles(
   const db = await getDb();
   const cutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
 
-  const raw = await db.getAllAsync<ArticleRow>(
-    `SELECT id, source_id, url, title, topic, score, fetched_at FROM articles
+  const raw = await db.getAllAsync<EnrichmentArticleRow>(
+    `SELECT id, source_id, url, title, topic, score, fetched_at,
+            site_domain, published_date
+     FROM articles
      WHERE word_count = 0 AND content_html = ''
        AND fetched_at > ?
        AND (published_date IS NULL OR published_date > ?)
@@ -421,29 +576,7 @@ async function enrichArticles(
   );
   if (raw.length === 0) return;
 
-  // Round-robin across sources before slicing the batch: pure
-  // recency-order lets one prolific feed (johndcook.com posts several
-  // times daily) own every enrichment slot, starving the long tail.
-  const bySource = new Map<number, ArticleRow[]>();
-  for (const row of raw) {
-    const key = row.source_id ?? 0;
-    const list = bySource.get(key);
-    if (list) list.push(row);
-    else bySource.set(key, [row]);
-  }
-  const candidates: ArticleRow[] = [];
-  let pickedAny = true;
-  while (candidates.length < batch && pickedAny) {
-    pickedAny = false;
-    for (const list of bySource.values()) {
-      if (candidates.length >= batch) break;
-      const next = list.shift();
-      if (next) {
-        candidates.push(next);
-        pickedAny = true;
-      }
-    }
-  }
+  const candidates = selectEnrichmentCandidates(raw, batch);
 
   // Interleave hosts before pooling: score-ordered candidates cluster
   // same-host articles together, and per-host politeness then serializes a
@@ -503,6 +636,17 @@ async function enrichArticles(
           extractFromHtml(res.text, res.finalUrl || article.url)
         );
         if (extracted) {
+          if (
+            requiresVerifiedPublicationDate(
+              article.source_id,
+              article.published_date,
+              extracted.publishedDate
+            )
+          ) {
+            await markArticleFailed(article.id);
+            tick();
+            return;
+          }
           const { quality } = scoreArticleQuality(extracted);
           const topic = assessTopic(extracted, asTopic(article.topic));
           await setArticleContent(article.id, {
@@ -538,6 +682,68 @@ async function enrichArticles(
       await new Promise<void>((resolve) => setImmediate(resolve));
     })()
   );
+}
+
+type EnrichmentArticleRow = ArticleRow & {
+  site_domain: string;
+  published_date: number | null;
+};
+
+// Direct Small Web rows intentionally arrive without the feed's unreliable
+// rediscovery date. HN rows carry a trustworthy submission date. Requiring
+// the destination page to date the remaining null-source rows prevents an
+// old undated post from masquerading as today's discovery.
+export function requiresVerifiedPublicationDate(
+  sourceId: number | null,
+  storedPublishedDate: number | null,
+  extractedPublishedDate: number | null
+): boolean {
+  return (
+    sourceId == null &&
+    storedPublishedDate == null &&
+    extractedPublishedDate == null
+  );
+}
+
+interface EnrichmentFairnessRow {
+  id: number;
+  source_id: number | null;
+  url: string;
+  site_domain: string;
+}
+
+// Community/HN inputs can put many publishers behind one source_id (or null
+// for direct HN stories). Fairness therefore follows the article's publisher
+// domain, falling back to the concrete host and only then the source/article.
+export function selectEnrichmentCandidates<T extends EnrichmentFairnessRow>(
+  raw: readonly T[],
+  batch: number
+): T[] {
+  const byPublisher = new Map<string, T[]>();
+  for (const row of raw) {
+    const key =
+      row.site_domain?.trim() ||
+      getHost(row.url) ||
+      (row.source_id != null ? `source:${row.source_id}` : `article:${row.id}`);
+    const list = byPublisher.get(key);
+    if (list) list.push(row);
+    else byPublisher.set(key, [row]);
+  }
+
+  const candidates: T[] = [];
+  let pickedAny = true;
+  while (candidates.length < batch && pickedAny) {
+    pickedAny = false;
+    for (const list of byPublisher.values()) {
+      if (candidates.length >= batch) break;
+      const next = list.shift();
+      if (next) {
+        candidates.push(next);
+        pickedAny = true;
+      }
+    }
+  }
+  return candidates;
 }
 
 function asTopic(value: string | null | undefined): Topic {

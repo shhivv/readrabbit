@@ -32,6 +32,22 @@ describe("feed identity", () => {
 
     expect(parsed?.entries[0]?.author).toBe("Jane Writer");
   });
+
+  test("deduplicates Medium tag-feed tracking URLs", () => {
+    const parsed = parseFeed(`
+      <rss version="2.0"><channel><title>Medium</title>
+        <item>
+          <title>An article</title>
+          <link>https://medium.com/@writer/an-article-abc123?source=rss------economics-5</link>
+          <dc:creator>Jane Writer</dc:creator>
+        </item>
+      </channel></rss>
+    `);
+
+    expect(parsed?.entries[0]?.url).toBe(
+      "https://medium.com/@writer/an-article-abc123"
+    );
+  });
 });
 
 describe("known community aggregators", () => {
