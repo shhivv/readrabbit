@@ -1,5 +1,10 @@
 {
-  "name": "naturally-curious",
+  "name": "readrabbit",
+  "homepage": "https://readrabbit.one",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shhivv/readrabbit.git"
+  },
   "main": "expo-router/entry",
   "version": "0.1.0",
   "dependencies": {

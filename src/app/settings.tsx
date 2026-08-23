@@ -25,7 +25,8 @@ import {
 import { refreshIfNeeded } from "@/lib/crawler/engine";
 import { PrimaryButton, TopicCard } from "@/lib/ui";
 
-const GITHUB_URL = "https://github.com/shhivv/naturallycurious";
+const GITHUB_URL = "https://github.com/shhivv/readrabbit";
+const WEBSITE_URL = "https://readrabbit.one";
 
 const BLURBS: Record<Topic, string> = {
   technology: "systems, programming, security",
@@ -169,13 +170,25 @@ export default function SettingsScreen() {
             ) : null}
 
             <View style={styles.about}>
-              <Text style={styles.aboutLine}>naturally curious v0.1.0</Text>
+              <Text style={styles.aboutLine}>ReadRabbit v0.1.0</Text>
+              <Pressable
+                style={styles.githubRow}
+                onPress={() => Linking.openURL(WEBSITE_URL)}
+              >
+                <Feather name="globe" size={14} color={colors.textTertiary} />
+                <Text style={styles.githubLink}>readrabbit.one</Text>
+                <Feather
+                  name="arrow-up-right"
+                  size={12}
+                  color={colors.textTertiary}
+                />
+              </Pressable>
               <Pressable
                 style={styles.githubRow}
                 onPress={() => Linking.openURL(GITHUB_URL)}
               >
                 <Feather name="github" size={14} color={colors.textTertiary} />
-                <Text style={styles.githubLink}>shhivv/naturallycurious</Text>
+                <Text style={styles.githubLink}>shhivv/readrabbit</Text>
                 <Feather
                   name="arrow-up-right"
                   size={12}

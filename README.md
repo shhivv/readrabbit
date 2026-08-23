@@ -1,4 +1,6 @@
-# Naturally Curious
+# ReadRabbit
+
+[readrabbit.one](https://readrabbit.one)
 
 A fully local, on-device blog discovery + reading app. No server, no accounts —
 you pick your interests, the phone itself crawls high-signal personal blogs,

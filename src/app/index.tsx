@@ -968,7 +968,7 @@ export default function ReaderScreen() {
   const shareArticle = useCallback(() => {
     if (!article) return;
     Share.share({
-      message: `${article.row.title}\n${article.row.url}\n\nshared from naturally curious`,
+      message: `${article.row.title}\n${article.row.url}\n\nshared from ReadRabbit`,
       url: article.row.url,
     }).catch(() => {});
   }, [article]);

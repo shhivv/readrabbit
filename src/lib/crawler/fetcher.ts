@@ -1,5 +1,5 @@
 const USER_AGENT =
-  "Mozilla/5.0 (compatible; NaturallyCurious/0.1; personal local reader)";
+  "Mozilla/5.0 (compatible; ReadRabbit/0.1; personal local reader)";
 const DEFAULT_TIMEOUT_MS = 15000;
 const HOST_DELAY_MS = 1200;
 // Phones: a multi-MB page is pure waste — extraction reads at most the first

@@ -2,7 +2,7 @@
 
 Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before writing any code.
 
-# Naturally Curious
+# ReadRabbit
 
 - Fully local app: no server, no API keys. All data in `expo-sqlite`.
 - Always use `bun` instead of npm/npx for installing packages and running scripts.

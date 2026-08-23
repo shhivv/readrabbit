@@ -20,7 +20,8 @@ import { seedCatalogSources, kvSet, type Topic } from "@/lib/db";
 import { runCrawl } from "@/lib/crawler/engine";
 import { registerBackgroundCrawl } from "@/lib/background";
 
-const GITHUB_URL = "https://github.com/shhivv/naturallycurious";
+const GITHUB_URL = "https://github.com/shhivv/readrabbit";
+const WEBSITE_URL = "https://readrabbit.one";
 const ENTER = { duration: 420, easing: Easing.out(Easing.quad) };
 
 const TOPIC_META: { id: Topic; label: string; blurb: string }[] = [
@@ -141,13 +142,13 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
           YOUR PERSONAL READER
         </Animated.Text>
         <Animated.Text entering={FadeIn.duration(700)} style={styles.logo}>
-          Naturally Curious
+          ReadRabbit
         </Animated.Text>
         <Animated.Text
           entering={FadeIn.duration(600).delay(250)}
           style={styles.tagline}
         >
-          A fully local reader for independent writing.
+          For the Naturally Curious
         </Animated.Text>
       </View>
       <PrimaryButton label="Get started" onPress={onNext} delay={500} />
@@ -230,10 +231,22 @@ function AboutStep({
               styles.githubRow,
               pressed && styles.rowPressed,
             ]}
+            onPress={() => Linking.openURL(WEBSITE_URL)}
+          >
+            <Feather name="globe" size={15} color={colors.textTertiary} />
+            <Text style={styles.githubLink}>readrabbit.one</Text>
+            <Feather name="arrow-up-right" size={13} color={colors.textTertiary} />
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.githubRow,
+              pressed && styles.rowPressed,
+            ]}
             onPress={() => Linking.openURL(GITHUB_URL)}
           >
             <Feather name="github" size={15} color={colors.textTertiary} />
-            <Text style={styles.githubLink}>shhivv/naturallycurious</Text>
+            <Text style={styles.githubLink}>shhivv/readrabbit</Text>
             <Feather name="arrow-up-right" size={13} color={colors.textTertiary} />
           </Pressable>
         </Animated.View>
