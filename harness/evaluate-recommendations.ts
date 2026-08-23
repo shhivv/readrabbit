@@ -28,6 +28,9 @@ const scenarios = [
   ["economics"],
   ["math"],
   ["technology"],
+  ["technology", "economics"],
+  ["technology", "math"],
+  ["economics", "math"],
   ["technology", "economics", "math"],
 ];
 
@@ -81,6 +84,7 @@ try {
     let worstDistinctDomains = Number.POSITIVE_INFINITY;
     let worstTopDomainShare = 0;
     let topicImbalance = 0;
+    const generatedMixes = new Set();
     let worstWindowDomainCount = 0;
     let sample = [];
 
@@ -132,8 +136,15 @@ try {
         if (domains[index] === domains[index - 1]) adjacentDomainRepeats++;
       }
 
+      // Topic balance is a generation-level contract. The presentation order
+      // and any smaller prefix are deliberately free to feel organic.
       const topicCounts = selectedTopics.map(
-        (topic) => head.filter((row) => row.topic === topic).length
+        (topic) => ordered.filter((row) => row.topic === topic).length
+      );
+      generatedMixes.add(
+        selectedTopics
+          .map((topic, index) => `${topic} ${topicCounts[index]}`)
+          .join(" · ")
       );
       if (topicCounts.length > 1) {
         topicImbalance = Math.max(
@@ -165,6 +176,7 @@ try {
     console.log(
       `  worst publication count in first ${WINDOW_SIZE}: ${worstWindowDomainCount} · fair minimum ${fairDomainCap}`
     );
+    console.log(`  generated mix: ${[...generatedMixes].join(" / ")}`);
     console.log("  sample:");
     for (const row of sample) {
       const attribution = getArticleAttribution(row);
@@ -183,7 +195,7 @@ try {
       fail(`${label} produced adjacent domain repeats`);
     }
     if (selectedTopics.length > 1 && topicImbalance > 1) {
-      fail(`${label} topic imbalance exceeded one card`);
+      fail(`${label} generated batch imbalance exceeded one card`);
     }
     if (worstWindowDomainCount > fairDomainCap) {
       fail(`${label} exceeded the fairest achievable publication cap of ${fairDomainCap}`);

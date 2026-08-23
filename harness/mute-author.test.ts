@@ -66,6 +66,8 @@ const {
   getDb,
   getIdentityExposure,
   getMutedAuthors,
+  kvGet,
+  kvSet,
   markRead,
   muteAuthor,
   setArticleContent,
@@ -376,5 +378,73 @@ describe("author preference and exposure persistence", () => {
       deque.slice(0, 12)
     );
     expect(firstDomains).toHaveLength(12);
+  });
+
+  test("rescues an underrepresented topic from a much larger candidate pool", async () => {
+    const db = await getDb();
+    await db.execAsync(
+      "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    );
+    const previousTopics = await kvGet("topics");
+    await kvSet("topics", JSON.stringify(["technology", "math"]));
+
+    await db.withTransactionAsync(async () => {
+      for (let index = 0; index < 400; index++) {
+        await db.runAsync(
+          `INSERT INTO articles (
+             url, title, author, author_key, site_name, site_domain,
+             published_date, excerpt, word_count, topic, topic_relevance,
+             fetched_at, score, quality
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, '', 900, 'technology', 0.95, ?, 0.9, 0.99)`,
+          [
+            `https://dominant-tech-${index}.example/essay`,
+            `Dominant technology essay ${index}`,
+            `Technology writer ${index}`,
+            `technology writer ${index}`,
+            `Dominant Tech ${index}`,
+            `dominant-tech-${index}.example`,
+            Date.now(),
+            Date.now(),
+          ]
+        );
+      }
+      for (let index = 0; index < 18; index++) {
+        await db.runAsync(
+          `INSERT INTO articles (
+             url, title, author, author_key, site_name, site_domain,
+             published_date, excerpt, word_count, topic, topic_relevance,
+             fetched_at, score, quality
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, '', 900, 'math', 0.95, ?, 0.4, 0.05)`,
+          [
+            `https://scarce-math-${index}.example/essay`,
+            `Scarce math essay ${index}`,
+            `Math writer ${index}`,
+            `math writer ${index}`,
+            `Scarce Math ${index}`,
+            `scarce-math-${index}.example`,
+            Date.now(),
+            Date.now(),
+          ]
+        );
+      }
+    });
+
+    const deque = await loadDeque();
+    const counts = await db.getAllAsync<{ topic: string; count: number }>(
+      `SELECT topic, COUNT(*) AS count FROM articles
+       WHERE id IN (${deque.map(() => "?").join(", ")})
+       GROUP BY topic`,
+      deque
+    );
+    expect(Object.fromEntries(counts.map((row) => [row.topic, row.count]))).toEqual({
+      math: 18,
+      technology: 18,
+    });
+
+    if (previousTopics == null) {
+      await db.runAsync("DELETE FROM kv WHERE key = 'topics'");
+    } else {
+      await kvSet("topics", previousTopics);
+    }
   });
 });

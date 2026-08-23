@@ -102,26 +102,56 @@ interface SelectionState {
   authorCounts: Map<string, number>;
   domainCounts: Map<string, number>;
   topicCounts: Map<Topic, number>;
-  remainingTopicCounts: Map<Topic, number>;
+  topicQuotas: Map<Topic, number>;
   lastAuthor: Map<string, number>;
   lastDomain: Map<string, number>;
+  topicBreadthByCandidate: Map<number, number>;
 }
 
 function countFor(map: Map<string, number>, key: string): number {
   return key ? (map.get(key) ?? 0) : 0;
 }
 
-function topicIsBalanced(
-  candidate: RecommendationCandidate,
-  state: SelectionState,
-  selectedTopics: Topic[]
-): boolean {
-  const available = selectedTopics.filter(
-    (topic) => (state.remainingTopicCounts.get(topic) ?? 0) > 0
+function voiceKey(candidate: RecommendationCandidate): string {
+  return candidate.authorKey || `site:${candidate.domain}`;
+}
+
+function allocateTopicQuotas(
+  selectedTopics: Topic[],
+  candidates: readonly RecommendationCandidate[],
+  limit: number
+): Map<Topic, number> {
+  const topics = [...new Set(selectedTopics)];
+  const available = new Map<Topic, number>(topics.map((topic) => [topic, 0]));
+  for (const candidate of candidates) {
+    if (available.has(candidate.topic)) {
+      available.set(candidate.topic, (available.get(candidate.topic) ?? 0) + 1);
+    }
+  }
+
+  const quotas = new Map<Topic, number>(topics.map((topic) => [topic, 0]));
+  let slots = Math.min(
+    Math.max(0, limit),
+    [...available.values()].reduce((sum, count) => sum + count, 0)
   );
-  if (available.length < 2) return true;
-  const minimum = Math.min(...available.map((topic) => state.topicCounts.get(topic) ?? 0));
-  return (state.topicCounts.get(candidate.topic) ?? 0) <= minimum;
+
+  // Water-fill the batch evenly. A topic that runs out simply stops taking
+  // turns in quota allocation, so its unused share is redistributed without
+  // leaving the reader short.
+  while (slots > 0) {
+    let allocated = false;
+    for (const topic of topics) {
+      if (slots === 0) break;
+      const quota = quotas.get(topic) ?? 0;
+      if (quota >= (available.get(topic) ?? 0)) continue;
+      quotas.set(topic, quota + 1);
+      slots--;
+      allocated = true;
+    }
+    if (!allocated) break;
+  }
+
+  return quotas;
 }
 
 function passesStrictCaps(
@@ -188,8 +218,7 @@ function fallbackDiversityCost(
   rank: number,
   remainingCount: number,
   position: number,
-  state: SelectionState,
-  selectedTopics: Topic[]
+  state: SelectionState
 ): number {
   const domainCount = countFor(state.domainCounts, candidate.domain);
   const authorCount = countFor(state.authorCounts, candidate.authorKey);
@@ -204,7 +233,6 @@ function fallbackDiversityCost(
     (lastAuthor === position - 1 ? 40 : 0);
 
   return (
-    (topicIsBalanced(candidate, state, selectedTopics) ? 0 : 100_000) +
     domainCount * 1_000 +
     authorCount * 100 +
     adjacentPenalty +
@@ -215,57 +243,59 @@ function fallbackDiversityCost(
 function selectCandidateIndex<T extends RecommendationCandidate>(
   remaining: T[],
   position: number,
-  state: SelectionState,
-  selectedTopics: Topic[]
+  state: SelectionState
 ): number {
   let bestIndex = -1;
   let bestTier = Number.POSITIVE_INFINITY;
+  let bestTopicBreadth = Number.POSITIVE_INFINITY;
   let bestFallbackCost = Number.POSITIVE_INFINITY;
 
   // One priority scan replaces five repeated findIndex passes. Within each
   // rule tier the original quality/random order is retained.
   for (let index = 0; index < remaining.length; index++) {
     const candidate = remaining[index];
-    const balanced = topicIsBalanced(candidate, state, selectedTopics);
+    if (
+      (state.topicCounts.get(candidate.topic) ?? 0) >=
+      (state.topicQuotas.get(candidate.topic) ?? 0)
+    ) {
+      continue;
+    }
+
     const strict = passesStrictDiversity(candidate, position, state);
     const caps = strict || passesStrictCaps(candidate, position, state);
     let tier: number;
 
-    if (balanced && strict) tier = 0;
-    else if (strict) tier = 1;
-    else if (balanced && caps) tier = 2;
-    else if (caps) tier = 3;
-    else if (passesRelaxedDiversity(candidate, position, state)) tier = 4;
-    else tier = 5;
+    if (strict) tier = 0;
+    else if (caps) tier = 1;
+    else if (passesRelaxedDiversity(candidate, position, state)) tier = 2;
+    else tier = 3;
 
-    if (tier === 0) return index;
-    if (tier < bestTier) {
+    // A voice with articles in several selected topics is flexible supply.
+    // Prefer a topic-exclusive voice at the same diversity tier so one topic
+    // cannot consume somebody another topic will need for a diverse batch.
+    const topicBreadth = state.topicBreadthByCandidate.get(candidate.id) ?? 1;
+    if (tier === 0 && topicBreadth === 1) return index;
+    const fallbackCost =
+      tier === 3
+        ? fallbackDiversityCost(
+            candidate,
+            index,
+            remaining.length,
+            position,
+            state
+          )
+        : Number.POSITIVE_INFINITY;
+    if (
+      tier < bestTier ||
+      (tier === bestTier && topicBreadth < bestTopicBreadth) ||
+      (tier === bestTier &&
+        topicBreadth === bestTopicBreadth &&
+        fallbackCost < bestFallbackCost)
+    ) {
       bestTier = tier;
+      bestTopicBreadth = topicBreadth;
       bestIndex = index;
-      bestFallbackCost =
-        tier === 5
-          ? fallbackDiversityCost(
-              candidate,
-              index,
-              remaining.length,
-              position,
-              state,
-              selectedTopics
-            )
-          : Number.POSITIVE_INFINITY;
-    } else if (tier === 5 && bestTier === 5) {
-      const cost = fallbackDiversityCost(
-        candidate,
-        index,
-        remaining.length,
-        position,
-        state,
-        selectedTopics
-      );
-      if (cost < bestFallbackCost) {
-        bestFallbackCost = cost;
-        bestIndex = index;
-      }
+      bestFallbackCost = fallbackCost;
     }
   }
   return bestIndex;
@@ -283,29 +313,31 @@ export function buildDiverseSlate<T extends RecommendationCandidate>(
 ): T[] {
   const remaining = orderedCandidates.slice();
   const result: T[] = [];
+  const topicsByVoice = new Map<string, Set<Topic>>();
+  for (const candidate of remaining) {
+    const key = voiceKey(candidate);
+    const topics = topicsByVoice.get(key) ?? new Set<Topic>();
+    topics.add(candidate.topic);
+    topicsByVoice.set(key, topics);
+  }
   const state: SelectionState = {
     authorCounts: new Map(),
     domainCounts: new Map(),
     topicCounts: new Map(),
-    remainingTopicCounts: new Map(),
+    topicQuotas: allocateTopicQuotas(selectedTopics, remaining, limit),
     lastAuthor: new Map(),
     lastDomain: new Map(),
+    topicBreadthByCandidate: new Map(
+      remaining.map((candidate) => [
+        candidate.id,
+        topicsByVoice.get(voiceKey(candidate))?.size ?? 1,
+      ])
+    ),
   };
-  for (const candidate of remaining) {
-    state.remainingTopicCounts.set(
-      candidate.topic,
-      (state.remainingTopicCounts.get(candidate.topic) ?? 0) + 1
-    );
-  }
 
   while (result.length < limit && remaining.length > 0) {
     const position = result.length;
-    const index = selectCandidateIndex(
-      remaining,
-      position,
-      state,
-      selectedTopics
-    );
+    const index = selectCandidateIndex(remaining, position, state);
     if (index < 0) break;
 
     const [picked] = remaining.splice(index, 1);
@@ -327,10 +359,6 @@ export function buildDiverseSlate<T extends RecommendationCandidate>(
     state.topicCounts.set(
       picked.topic,
       (state.topicCounts.get(picked.topic) ?? 0) + 1
-    );
-    state.remainingTopicCounts.set(
-      picked.topic,
-      Math.max(0, (state.remainingTopicCounts.get(picked.topic) ?? 1) - 1)
     );
   }
 

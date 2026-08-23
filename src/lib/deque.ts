@@ -107,12 +107,41 @@ function weightedCandidateQuery(topicCount: number): string {
 export async function loadDeque(): Promise<number[]> {
   const selectedTopics = await getSelectedTopics();
   if (selectedTopics.length === 0) return [];
+  return loadDequeWindow(selectedTopics);
+}
+
+async function loadDequeWindow(
+  selectedTopics: Topic[],
+  excludedIds: readonly number[] = []
+): Promise<number[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<CandidateRow>(
     weightedCandidateQuery(selectedTopics.length),
     [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE]
   );
-  const exposureAdjusted = coolByPersistentExposure(rows);
+  const excluded = new Set(excludedIds);
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const minimumPerTopic = Math.floor(WINDOW_SIZE / selectedTopics.length);
+
+  // The broad query is the fast path. Only rescue a topic separately when a
+  // much larger pool crowded it below its batch share (or queued IDs consumed
+  // that share). Typical generations stay a single SQLite read.
+  for (const topic of selectedTopics) {
+    const available = rows.filter(
+      (row) => row.topic === topic && !excluded.has(row.id)
+    ).length;
+    if (available >= minimumPerTopic) continue;
+
+    const rescueRows = await db.getAllAsync<CandidateRow>(
+      weightedCandidateQuery(1),
+      [MIN_TOPIC_RELEVANCE, topic, CANDIDATE_POOL_SIZE]
+    );
+    for (const row of rescueRows) rowsById.set(row.id, row);
+  }
+
+  const exposureAdjusted = coolByPersistentExposure([
+    ...rowsById.values(),
+  ]).filter((row) => !excluded.has(row.id));
   return buildDiverseSlate(exposureAdjusted, WINDOW_SIZE, selectedTopics).map(
     (row) => row.id
   );
@@ -154,7 +183,10 @@ async function getSelectedTopics(): Promise<Topic[]> {
   return [...TOPICS];
 }
 
-let topUpInFlight: Promise<{ fresh: number[]; crawling: boolean }> | null = null;
+let topUpInFlight: {
+  tailId: number | null;
+  promise: Promise<{ fresh: number[]; crawling: boolean }>;
+} | null = null;
 
 // Called when the reader approaches the end of its deque: refill from the DB,
 // and if the DB itself is running dry, kick a foreground crawl burst.
@@ -162,20 +194,24 @@ export async function topUpDeque(currentIds: number[]): Promise<{
   ids: number[];
   crawling: boolean;
 }> {
-  if (!topUpInFlight) {
-    topUpInFlight = fetchTopUpCandidates();
+  const tailId = currentIds.at(-1) ?? null;
+  if (!topUpInFlight || topUpInFlight.tailId !== tailId) {
+    topUpInFlight = {
+      tailId,
+      promise: fetchTopUpCandidates(currentIds),
+    };
   }
 
   const request = topUpInFlight;
   try {
-    const { fresh, crawling } = await request;
+    const { fresh, crawling } = await request.promise;
     return { ids: appendUnseen(currentIds, fresh), crawling };
   } finally {
     if (topUpInFlight === request) topUpInFlight = null;
   }
 }
 
-async function fetchTopUpCandidates(): Promise<{
+async function fetchTopUpCandidates(currentIds: readonly number[]): Promise<{
   fresh: number[];
   crawling: boolean;
 }> {
@@ -191,7 +227,13 @@ async function fetchTopUpCandidates(): Promise<{
     await new Promise<void>((resolve) => setTimeout(resolve, 4000));
   }
 
-  return { fresh: await loadDeque(), crawling };
+  const selectedTopics = await getSelectedTopics();
+  if (selectedTopics.length === 0) return { fresh: [], crawling };
+
+  return {
+    fresh: await loadDequeWindow(selectedTopics, currentIds),
+    crawling,
+  };
 }
 
 function appendUnseen(current: number[], fresh: number[]): number[] {

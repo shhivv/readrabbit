@@ -92,10 +92,15 @@ describe("recommendation slate diversity", () => {
     expect([...counts.values()].sort()).toEqual([5, 5, 5, 5, 5]);
   });
 
-  test("balances selected topics while each has candidates", () => {
+  test("balances the generated batch without forcing topic alternation", () => {
     const rows = [
       ...Array.from({ length: 8 }, (_, index) =>
-        candidate(index + 1, `econ-${index}.example`, `econ-${index}`, "economics")
+        candidate(
+          index + 1,
+          `econ-${index}.example`,
+          `econ-${index}`,
+          "economics"
+        )
       ),
       ...Array.from({ length: 8 }, (_, index) =>
         candidate(100 + index, `math-${index}.example`, `math-${index}`, "math")
@@ -104,6 +109,93 @@ describe("recommendation slate diversity", () => {
     const slate = buildDiverseSlate(rows, 8, ["economics", "math"]);
     expect(slate.filter((row) => row.topic === "economics")).toHaveLength(4);
     expect(slate.filter((row) => row.topic === "math")).toHaveLength(4);
+    // The input quality order groups the topics, and that natural ordering is
+    // preserved. Only the completed batch composition is constrained.
+    expect(slate.map((row) => row.topic)).toEqual([
+      "economics",
+      "economics",
+      "economics",
+      "economics",
+      "math",
+      "math",
+      "math",
+      "math",
+    ]);
+  });
+
+  test("splits a three-topic generation equally", () => {
+    const rows = [
+      ...Array.from({ length: 4 }, (_, index) =>
+        candidate(
+          index + 1,
+          `tech-${index}.example`,
+          `tech-${index}`,
+          "technology"
+        )
+      ),
+      ...Array.from({ length: 4 }, (_, index) =>
+        candidate(
+          100 + index,
+          `econ-${index}.example`,
+          `econ-${index}`,
+          "economics"
+        )
+      ),
+      ...Array.from({ length: 4 }, (_, index) =>
+        candidate(200 + index, `math-${index}.example`, `math-${index}`, "math")
+      ),
+    ];
+    const slate = buildDiverseSlate(rows, 12, [
+      "technology",
+      "economics",
+      "math",
+    ]);
+
+    expect(slate.filter((row) => row.topic === "technology")).toHaveLength(4);
+    expect(slate.filter((row) => row.topic === "economics")).toHaveLength(4);
+    expect(slate.filter((row) => row.topic === "math")).toHaveLength(4);
+  });
+
+  test("keeps the topic split exact before relaxing identity diversity", () => {
+    const rows = [
+      candidate(1, "shared.example", "tech-writer", "technology"),
+      candidate(2, "unique.example", "other-tech-writer", "technology"),
+      candidate(3, "shared.example", "econ-writer", "economics"),
+    ];
+    const slate = buildDiverseSlate(rows, 2, ["technology", "economics"]);
+
+    expect(slate.map((row) => row.id)).toEqual([1, 3]);
+  });
+
+  test("reserves a cross-topic voice for the topic with less exclusive supply", () => {
+    const rows = [
+      candidate(1, "shared-tech.example", "shared-writer", "technology"),
+      candidate(2, "exclusive-tech.example", "tech-writer", "technology"),
+      candidate(3, "shared-econ.example", "shared-writer", "economics"),
+    ];
+    const slate = buildDiverseSlate(rows, 2, ["technology", "economics"]);
+
+    expect(slate.map((row) => row.id)).toEqual([2, 3]);
+    expect(new Set(slate.map((row) => row.authorKey)).size).toBe(2);
+  });
+
+  test("fills from available topics after a scarce topic runs out", () => {
+    const rows = [
+      ...Array.from({ length: 5 }, (_, index) =>
+        candidate(
+          index + 1,
+          `tech-${index}.example`,
+          `tech-${index}`,
+          "technology"
+        )
+      ),
+      candidate(100, "econ.example", "econ", "economics"),
+    ];
+    const slate = buildDiverseSlate(rows, 6, ["technology", "economics"]);
+
+    expect(slate).toHaveLength(6);
+    expect(slate.filter((row) => row.topic === "technology")).toHaveLength(5);
+    expect(slate.filter((row) => row.topic === "economics")).toHaveLength(1);
   });
 
   test("still fills a slate when the eligible pool is small", () => {
