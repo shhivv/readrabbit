@@ -27,7 +27,6 @@ import Animated, {
   runOnJS,
   FadeIn,
   Easing,
-  type SharedValue,
 } from "react-native-reanimated";
 import { Feather } from "@expo/vector-icons";
 import RenderHtml from "react-native-render-html";
@@ -59,6 +58,11 @@ const SPRING_CONFIG = { damping: 20, stiffness: 300, mass: 0.8 };
 const SPRING_SNAPPY = { damping: 15, stiffness: 400, mass: 0.5 };
 const ENTER_DURATION = 500;
 const ENTER_EASE = Easing.out(Easing.exp);
+const OVERFLOW_BUTTON_SIZE = 44;
+const SWIPE_ACTIVATION_DISTANCE = 20;
+const SWIPE_COMMIT_DISTANCE = 60;
+const SWIPE_FLICK_VELOCITY = 500;
+const BOOKMARK_BLUE = "#4da3ff";
 
 // ---------- article model ----------
 
@@ -523,12 +527,10 @@ function ArticleHeader({
   article,
   bookmarked,
   onToggleBookmark,
-  onShare,
 }: {
   article: ArticleRow;
   bookmarked: boolean;
   onToggleBookmark: () => void;
-  onShare: () => void;
 }) {
   const bookmarkScale = useSharedValue(1);
   const prevBookmarked = useRef(bookmarked);
@@ -543,25 +545,46 @@ function ArticleHeader({
     }
   }, [bookmarked, bookmarkScale]);
 
+  const bookmarkStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: bookmarkScale.value }],
+  }));
+
   return (
     <View style={styles.articleHeader}>
-      <Animated.View entering={FadeIn.duration(ENTER_DURATION).easing(ENTER_EASE)} style={styles.metaRow}>
-        {article.site_name ? (
-          <Text style={styles.siteName}>{article.site_name}</Text>
+      <View style={styles.articleTopRow}>
+        <Animated.View
+          entering={FadeIn.duration(ENTER_DURATION).easing(ENTER_EASE)}
+          style={[styles.metaRow, styles.articleMeta]}
+        >
+          {article.site_name ? (
+            <Text style={styles.siteName}>{article.site_name}</Text>
+          ) : null}
+          {article.published_date ? (
+            <>
+              <Text style={styles.metaDot}>{"·"}</Text>
+              <Text style={styles.metaDate}>{formatDate(article.published_date)}</Text>
+            </>
+          ) : null}
+          {article.word_count > 0 ? (
+            <>
+              <Text style={styles.metaDot}>{"·"}</Text>
+              <Text style={styles.metaDate}>{readTime(article.word_count)}</Text>
+            </>
+          ) : null}
+        </Animated.View>
+
+        {bookmarked ? (
+          <AnimatedPressable
+            accessibilityLabel="Remove bookmark"
+            accessibilityRole="button"
+            hitSlop={10}
+            onPress={onToggleBookmark}
+            style={[styles.bookmarkIndicator, bookmarkStyle]}
+          >
+            <Feather name="bookmark" size={20} color={BOOKMARK_BLUE} />
+          </AnimatedPressable>
         ) : null}
-        {article.published_date ? (
-          <>
-            <Text style={styles.metaDot}>{"·"}</Text>
-            <Text style={styles.metaDate}>{formatDate(article.published_date)}</Text>
-          </>
-        ) : null}
-        {article.word_count > 0 ? (
-          <>
-            <Text style={styles.metaDot}>{"·"}</Text>
-            <Text style={styles.metaDate}>{readTime(article.word_count)}</Text>
-          </>
-        ) : null}
-      </Animated.View>
+      </View>
 
       <Animated.Text
         entering={FadeIn.duration(ENTER_DURATION).easing(ENTER_EASE).delay(60)}
@@ -637,6 +660,8 @@ export default function ReaderScreen() {
 
   const translateX = useSharedValue(0);
   const opacity = useSharedValue(1);
+  const swipeCommitted = useSharedValue(false);
+  const navigationInFlightRef = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
 
   const prefetchAround = useCallback((ids: number[], index: number) => {
@@ -768,80 +793,177 @@ export default function ReaderScreen() {
 
   const navigate = useCallback(
     async (direction: 1 | -1) => {
+      // A swipe can finish while hydration or a deque top-up is still on the
+      // JS thread. Ignore overlapping requests so they cannot advance the
+      // same index twice or let an older request replace a newer article.
+      if (navigationInFlightRef.current) {
+        translateX.value = withSpring(0, SPRING_CONFIG);
+        opacity.value = withSpring(1, SPRING_CONFIG);
+        return;
+      }
+      navigationInFlightRef.current = true;
+      swipeCommitted.value = true;
+
       const ids = dequeRef.current;
       const idx = currentIndexRef.current;
       const nextIndex = idx + direction;
+      const previousArticle = articleRef.current;
 
-      if (direction === -1 && nextIndex < 0) return;
+      const settleCurrentArticle = () => {
+        currentIndexRef.current = idx;
+        setCurrentIndex(idx);
 
-      if (nextIndex >= ids.length) {
-        // end of deque: refill
-        setStarving(true);
-        const { ids: refilled } = await topUpDeque(ids);
-        dequeRef.current = refilled;
-        setDequeIds(refilled);
-        setStarving(false);
-        if (refilled.length > 0) {
-          const nextIdx = Math.min(idx + 1, refilled.length - 1);
-          currentIndexRef.current = nextIdx;
-          setCurrentIndex(nextIdx);
-          const next = await hydrate(refilled[nextIdx]);
+        if (previousArticle && articleRef.current?.row.id !== previousArticle.row.id) {
+          pendingReveal.current = "instant";
+          articleRef.current = previousArticle;
+          setArticle(previousArticle);
+          setBookmarkedState(!!previousArticle.row.is_bookmarked);
+          setArticleKey((key) => key + 1);
+        }
+
+        translateX.value = withSpring(0, SPRING_CONFIG);
+        opacity.value = withSpring(1, SPRING_CONFIG);
+      };
+
+      try {
+        if (direction === -1 && nextIndex < 0) {
+          settleCurrentArticle();
+          return;
+        }
+
+        if (nextIndex >= ids.length) {
+          // There is no known card to animate to yet. Return the current card
+          // to rest while the deque refills instead of leaving it off-axis.
+          translateX.value = withSpring(0, SPRING_CONFIG);
+          opacity.value = withSpring(1, SPRING_CONFIG);
+
+          const { ids: refilled } = await topUpDeque(ids);
+          const latestIds = dequeRef.current;
+          const availableIds =
+            latestIds.length > refilled.length ? latestIds : refilled;
+
+          dequeRef.current = availableIds;
+          setDequeIds(availableIds);
+
+          // A top-up can legitimately return no new rows (or another top-up
+          // may still be running). Never clamp back to the current index,
+          // which would present the same article as if it were new.
+          if (nextIndex >= availableIds.length) {
+            settleCurrentArticle();
+            return;
+          }
+
+          const next = await hydrate(availableIds[nextIndex]);
+          if (!next) {
+            settleCurrentArticle();
+            return;
+          }
+
+          translateX.value = 0;
+          opacity.value = 1;
+          currentIndexRef.current = nextIndex;
+          setCurrentIndex(nextIndex);
           pendingReveal.current = "instant";
           scrollRef.current?.scrollTo({ y: 0, animated: false });
-          if (next) showArticle(next);
-          prefetchAround(refilled, nextIdx);
+          showArticle(next);
+          prefetchAround(availableIds, nextIndex);
+          return;
         }
-        return;
-      }
 
-      if (direction === 1 && articleRef.current) {
-        archiveArticle(articleRef.current.row.id).catch(() => {});
-      }
+        if (direction === 1 && articleRef.current) {
+          archiveArticle(articleRef.current.row.id).catch(() => {});
+        }
 
-      translateX.value = 0;
-      opacity.value = 0;
+        translateX.value = 0;
+        opacity.value = 0;
 
-      const nextId = ids[nextIndex];
-      const cached = hydrationCache.get(nextId);
+        const nextId = ids[nextIndex];
+        const cached = hydrationCache.get(nextId);
 
-      scrollRef.current?.scrollTo({ y: 0, animated: false });
-      currentIndexRef.current = nextIndex;
-      setCurrentIndex(nextIndex);
-      prefetchAround(ids, nextIndex);
+        scrollRef.current?.scrollTo({ y: 0, animated: false });
+        currentIndexRef.current = nextIndex;
+        setCurrentIndex(nextIndex);
+        prefetchAround(ids, nextIndex);
 
-      if (cached) {
-        pendingReveal.current = "instant";
-        showArticle(cached);
-      } else {
-        pendingReveal.current = "fade";
-        articleRef.current = null;
-        setArticle(null);
-        setArticleKey((k) => k + 1);
-        const next = await hydrate(nextId);
-        if (next) showArticle(next);
-      }
-
-      if (ids.length - nextIndex <= LOW_WATER) {
-        topUpDeque(ids).then(({ ids: merged }) => {
-          if (merged.length > ids.length) {
-            dequeRef.current = merged;
-            setDequeIds(merged);
+        if (cached) {
+          pendingReveal.current = "instant";
+          showArticle(cached);
+        } else {
+          pendingReveal.current = "fade";
+          articleRef.current = null;
+          setArticle(null);
+          setArticleKey((k) => k + 1);
+          const next = await hydrate(nextId);
+          if (!next) {
+            settleCurrentArticle();
+            return;
           }
-        });
+          showArticle(next);
+        }
+
+        if (ids.length - nextIndex <= LOW_WATER) {
+          topUpDeque(ids)
+            .then(({ ids: merged }) => {
+              // Do not let a slow top-up overwrite navigation history that a
+              // newer request has already extended.
+              if (merged.length > ids.length && dequeRef.current === ids) {
+                dequeRef.current = merged;
+                setDequeIds(merged);
+              }
+            })
+            .catch(() => {});
+        }
+      } catch {
+        settleCurrentArticle();
+      } finally {
+        navigationInFlightRef.current = false;
+        swipeCommitted.value = false;
       }
     },
-    [showArticle, prefetchAround, translateX, opacity]
+    [showArticle, prefetchAround, translateX, opacity, swipeCommitted]
   );
 
   const goNext = useCallback(() => navigate(1), [navigate]);
   const goPrev = useCallback(() => navigate(-1), [navigate]);
 
   const toggleBookmark = useCallback(() => {
-    if (!article) return;
+    const current = articleRef.current;
+    if (!current) return;
+
     const next = !bookmarked;
+    const articleId = current.row.id;
+    const updated: HydratedArticle = {
+      ...current,
+      row: { ...current.row, is_bookmarked: next ? 1 : 0 },
+    };
+
+    articleRef.current = updated;
+    setArticle(updated);
     setBookmarkedState(next);
-    setArticleBookmark(article.row.id, next).catch(() => {});
-  }, [article, bookmarked]);
+    touchCache(articleId, updated);
+
+    setArticleBookmark(articleId, next).catch(() => {
+      // Keep a later user action intact if this older write is the one that
+      // failed; otherwise restore both the visible article and the cache.
+      const cached = hydrationCache.get(articleId);
+      if (!cached || !!cached.row.is_bookmarked !== next) return;
+
+      const rolledBack: HydratedArticle = {
+        ...cached,
+        row: { ...cached.row, is_bookmarked: next ? 0 : 1 },
+      };
+      touchCache(articleId, rolledBack);
+
+      if (
+        articleRef.current?.row.id === articleId &&
+        !!articleRef.current.row.is_bookmarked === next
+      ) {
+        articleRef.current = rolledBack;
+        setArticle(rolledBack);
+        setBookmarkedState(!next);
+      }
+    });
+  }, [bookmarked]);
 
   const shareArticle = useCallback(() => {
     if (!article) return;
@@ -861,9 +983,10 @@ export default function ReaderScreen() {
   const hasPrev = currentIndex > 0;
 
   const gesture = Gesture.Pan()
-    .activeOffsetX([-30, 30])
-    .failOffsetY([-10, 10])
+    .activeOffsetX([-SWIPE_ACTIVATION_DISTANCE, SWIPE_ACTIVATION_DISTANCE])
+    .failOffsetY([-14, 14])
     .onUpdate((e) => {
+      if (swipeCommitted.value) return;
       const resistance = 0.35;
       const edgeDamping =
         (e.translationX < 0 && !hasNext) || (e.translationX > 0 && !hasPrev)
@@ -874,25 +997,59 @@ export default function ReaderScreen() {
       opacity.value = 1 - progress * 0.15;
     })
     .onEnd((e) => {
-      if (e.translationX < -80 && hasNext) {
+      if (swipeCommitted.value) return;
+
+      const swipedForward =
+        e.translationX < -SWIPE_COMMIT_DISTANCE ||
+        (e.translationX < -SWIPE_ACTIVATION_DISTANCE &&
+          e.velocityX < -SWIPE_FLICK_VELOCITY);
+      const swipedBackward =
+        e.translationX > SWIPE_COMMIT_DISTANCE ||
+        (e.translationX > SWIPE_ACTIVATION_DISTANCE &&
+          e.velocityX > SWIPE_FLICK_VELOCITY);
+
+      if (swipedForward && hasNext) {
+        swipeCommitted.value = true;
         opacity.value = withTiming(0, { duration: 150, easing: Easing.in(Easing.quad) });
         translateX.value = withTiming(
           -width * 0.25,
           { duration: 150, easing: Easing.in(Easing.quad) },
-          () => {
-            runOnJS(goNext)();
+          (finished) => {
+            if (finished) {
+              runOnJS(goNext)();
+            } else {
+              swipeCommitted.value = false;
+              translateX.value = withSpring(0, SPRING_CONFIG);
+              opacity.value = withSpring(1, SPRING_CONFIG);
+            }
           }
         );
-      } else if (e.translationX > 80 && hasPrev) {
+      } else if (swipedBackward && hasPrev) {
+        swipeCommitted.value = true;
         opacity.value = withTiming(0, { duration: 150, easing: Easing.in(Easing.quad) });
         translateX.value = withTiming(
           width * 0.25,
           { duration: 150, easing: Easing.in(Easing.quad) },
-          () => {
-            runOnJS(goPrev)();
+          (finished) => {
+            if (finished) {
+              runOnJS(goPrev)();
+            } else {
+              swipeCommitted.value = false;
+              translateX.value = withSpring(0, SPRING_CONFIG);
+              opacity.value = withSpring(1, SPRING_CONFIG);
+            }
           }
         );
       } else {
+        translateX.value = withSpring(0, SPRING_CONFIG);
+        opacity.value = withSpring(1, SPRING_CONFIG);
+      }
+    })
+    .onFinalize(() => {
+      // onEnd is not called for every terminal gesture state (for example,
+      // cancellation by the OS or another recognizer). Always settle a
+      // non-committed card so partial translation/rotation cannot persist.
+      if (!swipeCommitted.value) {
         translateX.value = withSpring(0, SPRING_CONFIG);
         opacity.value = withSpring(1, SPRING_CONFIG);
       }
@@ -926,10 +1083,9 @@ export default function ReaderScreen() {
         <View style={styles.center}>
           <Animated.View entering={FadeIn.duration(600).easing(ENTER_EASE)}>
             <ActivityIndicator color={colors.accent} />
-            <Text style={styles.emptyTitle}>gathering good posts…</Text>
+            <Text style={styles.emptyTitle}>Building your reading list…</Text>
             <Text style={styles.emptySubtitle}>
-              your phone is off reading blogs right now.
-this fills in on its own.
+              Finding thoughtful posts from independent blogs.
             </Text>
           </Animated.View>
         </View>
@@ -946,7 +1102,13 @@ this fills in on its own.
               <ScrollView
                 ref={scrollRef}
                 style={styles.scroll}
-                contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 12 }]}
+                contentContainerStyle={[
+                  styles.scrollContent,
+                  {
+                    paddingTop:
+                      insets.top + OVERFLOW_BUTTON_SIZE + spacing.lg,
+                  },
+                ]}
                 showsVerticalScrollIndicator={false}
                 key={`scroll-${article.row.id}`}
               >
@@ -955,7 +1117,6 @@ this fills in on its own.
                   article={article.row}
                   bookmarked={bookmarked}
                   onToggleBookmark={toggleBookmark}
-                  onShare={shareArticle}
                 />
 
                 {article.row.lead_image_url ? (
@@ -1013,7 +1174,7 @@ this fills in on its own.
             )}
           </Animated.View>
         </GestureDetector>
-        <FloatingActions
+        <OverflowMenu
           bookmarked={bookmarked}
           onToggleBookmark={toggleBookmark}
           onShare={shareArticle}
@@ -1029,15 +1190,13 @@ async function setArticleBookmark(articleId: number, next: boolean): Promise<voi
   await setBookmarked(articleId, next);
 }
 
-const FAB_SIZE = 50;
-const FAB_ITEMS = [
-  { key: "settings", label: "Settings" },
-  { key: "share", label: "Share" },
-  { key: "bookmark", label: "Bookmark" },
-];
-const FAB_ITEM_HEIGHT = 44;
+const OVERFLOW_ITEMS = [
+  { key: "bookmark", label: "Bookmark", icon: "bookmark" },
+  { key: "share", label: "Share", icon: "share-2" },
+  { key: "settings", label: "Settings", icon: "settings" },
+] as const;
 
-function FloatingActions({
+function OverflowMenu({
   bookmarked,
   onToggleBookmark,
   onShare,
@@ -1086,12 +1245,20 @@ function FloatingActions({
     [close, onToggleBookmark, onShare, onNotInterested, onSettings]
   );
 
-  const mainRotation = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${interpolate(open.value, [0, 1], [0, 45])}deg` }],
+  const overlayStyle = useAnimatedStyle(() => ({
+    opacity: open.value * 0.35,
   }));
 
-  const overlayStyle = useAnimatedStyle(() => ({
-    opacity: open.value * 0.85,
+  const menuStyle = useAnimatedStyle(() => ({
+    opacity: open.value,
+    transform: [
+      { translateY: interpolate(open.value, [0, 1], [-8, 0]) },
+      { scale: interpolate(open.value, [0, 1], [0.96, 1]) },
+    ],
+  }));
+
+  const buttonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: interpolate(open.value, [0, 1], [1, 0.96]) }],
   }));
 
   return (
@@ -1104,94 +1271,133 @@ function FloatingActions({
       </Animated.View>
       <View
         style={[
-          fabStyles.container,
-          { bottom: Math.max(insets.bottom, 16) + 8 },
+          overflowStyles.container,
+          {
+            top: insets.top + spacing.sm,
+            right: insets.right + spacing.md,
+          },
         ]}
         pointerEvents="box-none"
       >
-        {FAB_ITEMS.map((item, i) => (
-          <FabOption
-            key={item.key}
-            label={
-              item.key === "bookmark" && bookmarked ? "Bookmarked" : item.label
-            }
-            index={i}
-            total={FAB_ITEMS.length}
-            open={open}
-            active={item.key === "bookmark" && bookmarked}
-            onPress={() => handleAction(item.key)}
-          />
-        ))}
-        <AnimatedPressable onPress={toggle} style={fabStyles.main}>
+        <AnimatedPressable
+          accessibilityLabel={expanded ? "Close article menu" : "Open article menu"}
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          hitSlop={6}
+          onPress={toggle}
+          style={[
+            overflowStyles.main,
+            expanded && overflowStyles.mainExpanded,
+            buttonStyle,
+          ]}
+        >
           <Feather name="more-horizontal" size={20} color={colors.text} />
         </AnimatedPressable>
+
+        <Animated.View
+          accessibilityRole="menu"
+          pointerEvents={expanded ? "auto" : "none"}
+          style={[overflowStyles.menu, menuStyle]}
+        >
+          {OVERFLOW_ITEMS.map((item, index) => {
+            const active = item.key === "bookmark" && bookmarked;
+            const label = active ? "Bookmarked" : item.label;
+
+            return (
+              <Pressable
+                accessibilityRole="menuitem"
+                accessibilityState={{ selected: active }}
+                key={item.key}
+                onPress={() => handleAction(item.key)}
+                style={({ pressed }) => [
+                  overflowStyles.menuItem,
+                  index > 0 && overflowStyles.menuDivider,
+                  active && overflowStyles.menuItemActive,
+                  pressed && overflowStyles.menuItemPressed,
+                ]}
+              >
+                <Feather
+                  name={item.icon}
+                  size={17}
+                  color={active ? colors.text : colors.textSecondary}
+                />
+                <Text
+                  style={[
+                    overflowStyles.menuLabel,
+                    active && overflowStyles.menuLabelActive,
+                  ]}
+                >
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </Animated.View>
       </View>
     </>
   );
 }
 
-function FabOption({
-  label,
-  index,
-  total,
-  open,
-  active,
-  onPress,
-}: {
-  label: string;
-  index: number;
-  total: number;
-  open: SharedValue<number>;
-  active?: boolean;
-  onPress: () => void;
-}) {
-  const reverseIndex = total - 1 - index;
-  const style = useAnimatedStyle(() => {
-    const stagger = reverseIndex * 0.04;
-    const progress = interpolate(open.value, [stagger, stagger + 0.5], [0, 1], "clamp");
-    return {
-      opacity: progress,
-      transform: [
-        { translateY: interpolate(progress, [0, 1], [8, 0]) },
-      ],
-    };
-  });
-
-  return (
-    <Animated.View style={[{ paddingVertical: 10, alignSelf: "flex-end" }, style]}>
-      <Pressable onPress={onPress} hitSlop={12}>
-        <Text
-          style={[
-            fabStyles.optionLabel,
-            active && { color: colors.accent },
-          ]}
-        >
-          {label}
-        </Text>
-      </Pressable>
-    </Animated.View>
-  );
-}
-
-const fabStyles = StyleSheet.create({
+const overflowStyles = StyleSheet.create({
   container: {
     position: "absolute",
-    right: spacing.lg,
     alignItems: "flex-end",
     zIndex: 100,
     elevation: 100,
   },
   main: {
-    width: FAB_SIZE,
-    height: FAB_SIZE,
-    borderRadius: FAB_SIZE / 2,
-    backgroundColor: "#2c2c2c",
+    width: OVERFLOW_BUTTON_SIZE,
+    height: OVERFLOW_BUTTON_SIZE,
+    borderRadius: OVERFLOW_BUTTON_SIZE / 2,
+    backgroundColor: "rgba(28, 28, 28, 0.88)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#343434",
     alignItems: "center",
     justifyContent: "center",
   },
-  optionLabel: {
+  mainExpanded: {
+    backgroundColor: colors.bgActive,
+    borderColor: "#484848",
+  },
+  menu: {
+    position: "absolute",
+    top: OVERFLOW_BUTTON_SIZE + spacing.sm,
+    right: 0,
+    width: 184,
+    overflow: "hidden",
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#353535",
+    backgroundColor: "#1a1a1a",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 14,
+  },
+  menuItem: {
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  menuDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  menuItemActive: {
+    backgroundColor: "rgba(255, 255, 255, 0.055)",
+  },
+  menuItemPressed: {
+    backgroundColor: colors.bgActive,
+  },
+  menuLabel: {
     fontFamily: fonts.mono,
-    fontSize: 17,
+    fontSize: 14,
+    color: colors.textSecondary,
+  },
+  menuLabelActive: {
     color: colors.text,
   },
 });
@@ -1232,6 +1438,22 @@ const styles = StyleSheet.create({
   articleHeader: {
     marginBottom: 24,
     gap: 10,
+  },
+  articleTopRow: {
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  articleMeta: {
+    flex: 1,
+  },
+  bookmarkIndicator: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
   },
   metaRow: {
     flexDirection: "row",

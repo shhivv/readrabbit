@@ -1,9 +1,14 @@
 import { useEffect } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import {
+  ActivityIndicator,
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+} from "react-native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
-  withTiming,
   withSpring,
   FadeIn,
 } from "react-native-reanimated";
@@ -20,27 +25,39 @@ export function PrimaryButton({
   enabled = true,
   onPress,
   delay = 0,
+  loading = false,
 }: {
   label: string;
   enabled?: boolean;
   onPress: () => void;
   delay?: number;
+  loading?: boolean;
 }) {
-  const opacity = useSharedValue(enabled ? 1 : 0.35);
-  useEffect(() => {
-    opacity.value = withTiming(enabled ? 1 : 0.35, { duration: 200 });
-  }, [enabled, opacity]);
-
-  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  const interactive = enabled && !loading;
 
   return (
-    <Animated.View entering={FadeIn.delay(delay)} style={style}>
+    <Animated.View
+      entering={FadeIn.delay(delay)}
+      style={{ opacity: interactive || loading ? 1 : 0.3 }}
+    >
       <Pressable
-        disabled={!enabled}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !interactive, busy: loading }}
+        disabled={!interactive}
         onPress={onPress}
-        style={[styles.primaryBtn, !enabled && styles.btnDisabled]}
+        style={({ pressed }) => [
+          styles.primaryBtn,
+          pressed && styles.primaryBtnPressed,
+        ]}
       >
-        <Text style={styles.primaryLabel}>{label}</Text>
+        {loading ? (
+          <ActivityIndicator size="small" color={colors.bg} />
+        ) : (
+          <>
+            <Text style={styles.primaryLabel}>{label}</Text>
+            <Feather name="arrow-right" size={16} color={colors.bg} />
+          </>
+        )}
       </Pressable>
     </Animated.View>
   );
@@ -57,7 +74,6 @@ export function TopicCard({
   active: boolean;
   onPress: () => void;
 }) {
-  const scale = useSharedValue(1);
   const border = useSharedValue(active ? 1 : 0);
 
   useEffect(() => {
@@ -65,16 +81,14 @@ export function TopicCard({
   }, [active, border]);
 
   const cardStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
     backgroundColor:
       border.value > 0.5 ? "rgba(255, 255, 255, 0.08)" : colors.bgRaised,
   }));
 
   return (
     <Pressable
-      onPressIn={() => (scale.value = withSpring(0.97, SPRING))}
-      onPressOut={() => (scale.value = withSpring(1, SPRING))}
       onPress={onPress}
+      style={({ pressed }) => pressed && styles.topicCardPressed}
     >
       <Animated.View style={[styles.topicCard, cardStyle]}>
         <View style={styles.topicRow}>
@@ -95,23 +109,32 @@ export function TopicCard({
 
 const styles = StyleSheet.create({
   primaryBtn: {
-    backgroundColor: colors.bgRaised,
-    borderRadius: 14,
-    paddingVertical: 16,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: colors.text,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
   },
-  btnDisabled: {},
+  primaryBtnPressed: {
+    opacity: 0.84,
+    transform: [{ scale: 0.99 }],
+  },
   primaryLabel: {
     fontFamily: fonts.sansBold,
-    fontSize: 15,
-    color: colors.text,
-    letterSpacing: 0.3,
+    fontSize: 14,
+    color: colors.bg,
+    letterSpacing: 0.2,
   },
   topicCard: {
     borderRadius: 14,
     paddingVertical: 16,
     paddingHorizontal: 18,
     gap: 5,
+  },
+  topicCardPressed: {
+    transform: [{ scale: 0.97 }],
   },
   topicRow: {
     flexDirection: "row",

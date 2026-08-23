@@ -95,7 +95,7 @@ export async function countEligible(): Promise<number> {
   return row?.c ?? 0;
 }
 
-let toppingUp = false;
+let topUpInFlight: Promise<{ fresh: number[]; crawling: boolean }> | null = null;
 
 // Called when the reader approaches the end of its deque: refill from the DB,
 // and if the DB itself is running dry, kick a foreground crawl burst.
@@ -103,34 +103,47 @@ export async function topUpDeque(currentIds: number[]): Promise<{
   ids: number[];
   crawling: boolean;
 }> {
-  if (toppingUp) return { ids: currentIds, crawling: true };
-  toppingUp = true;
+  if (!topUpInFlight) {
+    topUpInFlight = fetchTopUpCandidates();
+  }
+
+  const request = topUpInFlight;
   try {
-    let eligible = await countEligible();
-    let crawling = false;
-
-    if (eligible < LOW_WATER) {
-      crawling = true;
-      // fire-and-forget: the reader shows a gentle "finding more" state
-      refreshIfNeeded();
-      // give the crawl a short window to produce something before requerying
-      await new Promise<void>((resolve) => setTimeout(resolve, 4000));
-      eligible = await countEligible();
-    }
-
-    if (eligible > currentIds.length || currentIds.length === 0) {
-      const fresh = await loadDeque();
-      return { ids: mergeUnique(fresh, currentIds), crawling };
-    }
-    return { ids: currentIds, crawling };
+    const { fresh, crawling } = await request;
+    return { ids: appendUnseen(currentIds, fresh), crawling };
   } finally {
-    toppingUp = false;
+    if (topUpInFlight === request) topUpInFlight = null;
   }
 }
 
-function mergeUnique(next: number[], prev: number[]): number[] {
-  // keep any remaining tail of the old deque that's still valid, prepend new
-  const seen = new Set(next);
-  const keptTail = prev.filter((id) => !seen.has(id));
-  return [...next.slice(0, WINDOW_SIZE - Math.min(keptTail.length, 20)), ...keptTail.slice(0, 20)];
+async function fetchTopUpCandidates(): Promise<{
+  fresh: number[];
+  crawling: boolean;
+}> {
+  const eligible = await countEligible();
+  let crawling = false;
+
+  if (eligible < LOW_WATER) {
+    crawling = true;
+    // fire-and-forget: the reader keeps its current article visible while
+    // the local crawler produces more candidates.
+    refreshIfNeeded();
+    // give the crawl a short window to produce something before requerying
+    await new Promise<void>((resolve) => setTimeout(resolve, 4000));
+  }
+
+  return { fresh: await loadDeque(), crawling };
+}
+
+function appendUnseen(current: number[], fresh: number[]): number[] {
+  // The current array is also the reader's navigation history. Reordering it
+  // would make an existing index point at a different article, so top-ups may
+  // only append IDs that have not appeared in this session.
+  const seen = new Set(current);
+  const unseen = fresh.filter((id) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return [...current, ...unseen];
 }

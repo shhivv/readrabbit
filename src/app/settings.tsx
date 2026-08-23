@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { StyleSheet, Text, View, Pressable, Linking, ScrollView } from "react-native";
+import {
+  StyleSheet,
+  Text,
+  View,
+  Pressable,
+  Linking,
+  ScrollView,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Animated, { FadeIn } from "react-native-reanimated";
 import { useRouter } from "expo-router";
@@ -16,7 +23,7 @@ import {
   type ArticleRow,
 } from "@/lib/db";
 import { refreshIfNeeded } from "@/lib/crawler/engine";
-import { TopicCard, PrimaryButton } from "@/lib/ui";
+import { PrimaryButton, TopicCard } from "@/lib/ui";
 
 const GITHUB_URL = "https://github.com/shhivv/naturallycurious";
 
@@ -178,11 +185,24 @@ export default function SettingsScreen() {
             </View>
           </ScrollView>
 
-          <PrimaryButton
-            label={saving ? "Saving..." : dirty ? "Save Changes" : "Saved"}
-            enabled={dirty && !saving}
-            onPress={save}
-          />
+          <View style={styles.saveArea}>
+            {dirty || saving ? (
+              <PrimaryButton
+                label="Save changes"
+                loading={saving}
+                onPress={save}
+              />
+            ) : (
+              <View
+                accessibilityLabel="All changes saved"
+                accessibilityRole="text"
+                style={styles.savedStatus}
+              >
+                <Feather name="check" size={15} color={colors.textTertiary} />
+                <Text style={styles.savedStatusLabel}>All changes saved</Text>
+              </View>
+            )}
+          </View>
         </Animated.View>
       )}
     </SafeAreaView>
@@ -212,6 +232,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingBottom: spacing.lg,
     paddingTop: spacing.sm,
+  },
+  saveArea: {
+    minHeight: 52,
+    justifyContent: "center",
+  },
+  savedStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  savedStatusLabel: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.textTertiary,
+    letterSpacing: 0.4,
   },
   sectionLabel: {
     fontFamily: fonts.mono,
