@@ -3,6 +3,8 @@ import { rootDomain } from "./crawler/classify";
 import { convertLatexImages, renderMathInHtml } from "./crawler/math";
 import { cleanAuthorName, normalizeAuthorKey } from "./attribution";
 import { assessTopic } from "./crawler/topic";
+import { isLowValueRoundup } from "./crawler/editorial";
+import { noteExposureChanged } from "./exposure";
 
 export { normalizeAuthorKey } from "./attribution";
 
@@ -69,7 +71,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 10;
+const DB_VERSION = 11;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -448,6 +450,33 @@ async function migrate(db: SQLite.SQLiteDatabase) {
     version = 10;
   }
 
+  // v11: link roundups are discovery material, not reader cards. Archive
+  // previously ingested recurring series (notably Martin Fowler's
+  // "Fragments") and index the small rolling exposure query used to keep
+  // publication diversity stable across app restarts.
+  if (version < 11) {
+    const articles = await db.getAllAsync<{ id: number; title: string }>(
+      "SELECT id, title FROM articles WHERE is_archived = 0"
+    );
+    const roundupIds = articles
+      .filter((article) => isLowValueRoundup(article.title))
+      .map((article) => article.id);
+
+    await db.withTransactionAsync(async () => {
+      for (const id of roundupIds) {
+        await db.runAsync(
+          "UPDATE articles SET is_archived = 1 WHERE id = ? AND is_bookmarked = 0",
+          [id]
+        );
+      }
+    });
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_articles_recent_read
+        ON articles (is_read, read_at DESC);
+    `);
+    version = 11;
+  }
+
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);
 }
 
@@ -820,6 +849,7 @@ export async function markRead(articleId: number): Promise<void> {
     "UPDATE articles SET is_read = 1, read_at = ? WHERE id = ?",
     [Date.now(), articleId]
   );
+  noteExposureChanged();
 }
 
 export async function archiveArticle(articleId: number): Promise<void> {

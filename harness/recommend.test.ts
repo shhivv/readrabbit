@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildDiverseSlate, type RecommendationCandidate } from "../src/lib/recommend";
+import {
+  buildDiverseSlate,
+  deferRecentlySeen,
+  type RecommendationCandidate,
+} from "../src/lib/recommend";
 
 function candidate(
   id: number,
@@ -29,6 +33,58 @@ describe("recommendation slate diversity", () => {
     );
     const slate = buildDiverseSlate(rows, 8, ["economics"]);
     expect(slate.filter((row) => row.authorKey === "same-author")).toHaveLength(1);
+  });
+
+  test("limits a prolific publication to two cards when the pool supports it", () => {
+    const rows = Array.from({ length: 20 }, (_, domain) =>
+      Array.from({ length: 3 }, (_, article) =>
+        candidate(
+          domain * 10 + article,
+          `site-${domain}.example`,
+          `writer-${domain}-${article}`
+        )
+      )
+    ).flat();
+    const slate = buildDiverseSlate(rows, 36, ["economics"]);
+    const counts = new Map<string, number>();
+    for (const row of slate) {
+      counts.set(row.domain, (counts.get(row.domain) ?? 0) + 1);
+    }
+    expect(Math.max(...counts.values())).toBe(2);
+  });
+
+  test("defers publications and authors from recent reading history", () => {
+    const ranked = [
+      candidate(1, "familiar.example", "familiar-writer"),
+      candidate(2, "fresh-a.example", "fresh-a"),
+      candidate(3, "fresh-b.example", "fresh-b"),
+      candidate(4, "another.example", "familiar-writer"),
+    ];
+    const recent = [candidate(99, "familiar.example", "familiar-writer")];
+    expect(deferRecentlySeen(ranked, recent).map((row) => row.id)).toEqual([
+      2,
+      3,
+      1,
+      4,
+    ]);
+  });
+
+  test("fairly distributes the fallback when every domain exceeds soft caps", () => {
+    const rows = Array.from({ length: 5 }, (_, domain) =>
+      Array.from({ length: 10 }, (_, article) =>
+        candidate(
+          domain * 100 + article,
+          `site-${domain}.example`,
+          `writer-${domain}-${article}`
+        )
+      )
+    ).flat();
+    const slate = buildDiverseSlate(rows, 25, ["economics"]);
+    const counts = new Map<string, number>();
+    for (const row of slate) {
+      counts.set(row.domain, (counts.get(row.domain) ?? 0) + 1);
+    }
+    expect([...counts.values()].sort()).toEqual([5, 5, 5, 5, 5]);
   });
 
   test("balances selected topics while each has candidates", () => {

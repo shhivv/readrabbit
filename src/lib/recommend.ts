@@ -7,6 +7,36 @@ export interface RecommendationCandidate {
   domain: string;
 }
 
+/**
+ * Keep the ranking's quality order inside each group, but place publications
+ * and bylines the reader just saw behind genuinely fresh voices. Article rows
+ * already persist read_at, so this rolling cooldown survives app restarts
+ * without another preference table or write on the navigation hot path.
+ */
+export function deferRecentlySeen<T extends RecommendationCandidate>(
+  orderedCandidates: T[],
+  recentHistory: readonly RecommendationCandidate[]
+): T[] {
+  if (recentHistory.length === 0) return orderedCandidates;
+
+  const domains = new Set(
+    recentHistory.map((row) => row.domain).filter(Boolean)
+  );
+  const authors = new Set(
+    recentHistory.map((row) => row.authorKey).filter(Boolean)
+  );
+  const fresh: T[] = [];
+  const deferred: T[] = [];
+
+  for (const candidate of orderedCandidates) {
+    const recentlySeen =
+      (candidate.domain !== "" && domains.has(candidate.domain)) ||
+      (candidate.authorKey !== "" && authors.has(candidate.authorKey));
+    (recentlySeen ? deferred : fresh).push(candidate);
+  }
+  return [...fresh, ...deferred];
+}
+
 interface SelectionState {
   authorCounts: Map<string, number>;
   domainCounts: Map<string, number>;
@@ -33,7 +63,7 @@ function topicIsBalanced(
   return (state.topicCounts.get(candidate.topic) ?? 0) <= minimum;
 }
 
-function passesStrictDiversity(
+function passesStrictCaps(
   candidate: RecommendationCandidate,
   position: number,
   state: SelectionState
@@ -47,7 +77,15 @@ function passesStrictDiversity(
   if (position < 12) {
     return authorCount === 0 && domainCount === 0;
   }
-  if (authorCount >= 2 || domainCount >= 3) return false;
+  return authorCount < 1 && domainCount < 1;
+}
+
+function passesStrictDiversity(
+  candidate: RecommendationCandidate,
+  position: number,
+  state: SelectionState
+): boolean {
+  if (!passesStrictCaps(candidate, position, state)) return false;
 
   const lastAuthor = candidate.authorKey
     ? state.lastAuthor.get(candidate.authorKey)
@@ -56,8 +94,8 @@ function passesStrictDiversity(
     ? state.lastDomain.get(candidate.domain)
     : undefined;
   return (
-    (lastAuthor == null || position - lastAuthor >= 10) &&
-    (lastDomain == null || position - lastDomain >= 5)
+    (lastAuthor == null || position - lastAuthor >= 15) &&
+    (lastDomain == null || position - lastDomain >= 10)
   );
 }
 
@@ -68,8 +106,8 @@ function passesRelaxedDiversity(
 ): boolean {
   const authorCount = countFor(state.authorCounts, candidate.authorKey);
   const domainCount = countFor(state.domainCounts, candidate.domain);
-  const authorLimit = position < 12 ? 2 : 3;
-  const domainLimit = position < 12 ? 2 : 4;
+  const authorLimit = 2;
+  const domainLimit = 2;
   if (authorCount >= authorLimit || domainCount >= domainLimit) return false;
 
   const lastAuthor = candidate.authorKey
@@ -79,9 +117,97 @@ function passesRelaxedDiversity(
     ? state.lastDomain.get(candidate.domain)
     : undefined;
   return (
-    (lastAuthor == null || position - lastAuthor >= 4) &&
-    (lastDomain == null || position - lastDomain >= 2)
+    (lastAuthor == null || position - lastAuthor >= 6) &&
+    (lastDomain == null || position - lastDomain >= 4)
   );
+}
+
+function fallbackDiversityCost(
+  candidate: RecommendationCandidate,
+  rank: number,
+  remainingCount: number,
+  position: number,
+  state: SelectionState,
+  selectedTopics: Topic[]
+): number {
+  const domainCount = countFor(state.domainCounts, candidate.domain);
+  const authorCount = countFor(state.authorCounts, candidate.authorKey);
+  const lastDomain = candidate.domain
+    ? state.lastDomain.get(candidate.domain)
+    : undefined;
+  const lastAuthor = candidate.authorKey
+    ? state.lastAuthor.get(candidate.authorKey)
+    : undefined;
+  const adjacentPenalty =
+    (lastDomain === position - 1 ? 80 : 0) +
+    (lastAuthor === position - 1 ? 40 : 0);
+
+  return (
+    (topicIsBalanced(candidate, state, selectedTopics) ? 0 : 100_000) +
+    domainCount * 1_000 +
+    authorCount * 100 +
+    adjacentPenalty +
+    rank / Math.max(1, remainingCount)
+  );
+}
+
+function selectCandidateIndex<T extends RecommendationCandidate>(
+  remaining: T[],
+  position: number,
+  state: SelectionState,
+  selectedTopics: Topic[]
+): number {
+  let bestIndex = -1;
+  let bestTier = Number.POSITIVE_INFINITY;
+  let bestFallbackCost = Number.POSITIVE_INFINITY;
+
+  // One priority scan replaces five repeated findIndex passes. Within each
+  // rule tier the original quality/random order is retained.
+  for (let index = 0; index < remaining.length; index++) {
+    const candidate = remaining[index];
+    const balanced = topicIsBalanced(candidate, state, selectedTopics);
+    const strict = passesStrictDiversity(candidate, position, state);
+    const caps = strict || passesStrictCaps(candidate, position, state);
+    let tier: number;
+
+    if (balanced && strict) tier = 0;
+    else if (strict) tier = 1;
+    else if (balanced && caps) tier = 2;
+    else if (caps) tier = 3;
+    else if (passesRelaxedDiversity(candidate, position, state)) tier = 4;
+    else tier = 5;
+
+    if (tier === 0) return index;
+    if (tier < bestTier) {
+      bestTier = tier;
+      bestIndex = index;
+      bestFallbackCost =
+        tier === 5
+          ? fallbackDiversityCost(
+              candidate,
+              index,
+              remaining.length,
+              position,
+              state,
+              selectedTopics
+            )
+          : Number.POSITIVE_INFINITY;
+    } else if (tier === 5 && bestTier === 5) {
+      const cost = fallbackDiversityCost(
+        candidate,
+        index,
+        remaining.length,
+        position,
+        state,
+        selectedTopics
+      );
+      if (cost < bestFallbackCost) {
+        bestFallbackCost = cost;
+        bestIndex = index;
+      }
+    }
+  }
+  return bestIndex;
 }
 
 /**
@@ -113,20 +239,12 @@ export function buildDiverseSlate<T extends RecommendationCandidate>(
 
   while (result.length < limit && remaining.length > 0) {
     const position = result.length;
-    const selectors = [
-      (row: T) =>
-        topicIsBalanced(row, state, selectedTopics) &&
-        passesStrictDiversity(row, position, state),
-      (row: T) => passesStrictDiversity(row, position, state),
-      (row: T) => passesRelaxedDiversity(row, position, state),
-      () => true,
-    ];
-
-    let index = -1;
-    for (const selector of selectors) {
-      index = remaining.findIndex(selector);
-      if (index >= 0) break;
-    }
+    const index = selectCandidateIndex(
+      remaining,
+      position,
+      state,
+      selectedTopics
+    );
     if (index < 0) break;
 
     const [picked] = remaining.splice(index, 1);

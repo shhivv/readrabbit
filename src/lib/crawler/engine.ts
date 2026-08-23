@@ -7,6 +7,7 @@ import {
   markArticleFailed,
   recordSourceFailure,
   recordSourceSuccess,
+  seedCatalogSources,
   setArticleContent,
   upsertArticleMeta,
   type ArticleRow,
@@ -25,6 +26,7 @@ import {
   probeTopCandidates,
 } from "./discover";
 import { extractFromHtml, sanitizeContentHtml, normalizeWhitespace } from "./extract";
+import { isLowValueRoundup } from "./editorial";
 import { renderMathInHtml } from "./math";
 import { scoreArticleQuality } from "./quality";
 import { assessTopic } from "./topic";
@@ -72,6 +74,10 @@ const MAX_INGEST_AGE_DAYS = 90;
 // as full articles (feed-tier enrichment) — readable immediately, no page
 // fetch needed. Teaser-only feeds fall through to normal enrichment.
 const MIN_FEED_TIER_WORDS = 250;
+// A single high-frequency publication must not own the initial local cache.
+// Twelve recent entries is ample between adaptive polls and leaves first-run
+// enrichment capacity for the long tail of sources.
+const MAX_ENTRIES_PER_SOURCE = 12;
 
 // Concurrent DOM parses allowed during enrichment (see extract gate below).
 const EXTRACT_CONCURRENCY = 3;
@@ -89,9 +95,24 @@ const LAST_CRAWL_KEY = "last_crawl_at";
 let running: Promise<boolean> | null = null;
 
 export async function refreshIfNeeded(): Promise<void> {
+  let seeded = 0;
+  try {
+    const rawTopics = await kvGet("topics");
+    const parsed = rawTopics ? (JSON.parse(rawTopics) as unknown) : [];
+    const topics = Array.isArray(parsed)
+      ? parsed.filter(
+          (topic): topic is Topic =>
+            topic === "technology" || topic === "economics" || topic === "math"
+        )
+      : [];
+    if (topics.length > 0) seeded = await seedCatalogSources(topics);
+  } catch {}
+
   const lastRaw = await kvGet(LAST_CRAWL_KEY);
   const last = lastRaw ? parseInt(lastRaw, 10) : 0;
-  if (Date.now() - last < 4 * 60 * 60 * 1000) return;
+  // Catalog additions should start filling immediately after an app update,
+  // even when the normal four-hour refresh window has not elapsed.
+  if (seeded === 0 && Date.now() - last < 4 * 60 * 60 * 1000) return;
   runCrawl({ mode: "background" }).catch(() => {});
 }
 
@@ -214,7 +235,10 @@ async function updateFeeds(
       // transaction is an fsync, so 30 individual inserts would mean 30
       // syncs; batched they cost one.
       await db.withTransactionAsync(async () => {
-        for (const entry of res.feed!.entries.slice(0, 30)) {
+        for (const entry of res.feed!.entries.slice(0, MAX_ENTRIES_PER_SOURCE)) {
+          if (isLowValueRoundup(entry.title)) {
+            continue;
+          }
           if (
             entry.publishedAt != null &&
             entry.publishedAt < ingestCutoff

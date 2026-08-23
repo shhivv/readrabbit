@@ -18,10 +18,12 @@ const { getDb, kvGet, kvSet, muteAuthor, unmuteAuthor } = await import("../src/l
 const { loadDeque } = await import("../src/lib/deque");
 const { MIN_TOPIC_RELEVANCE } = await import("../src/lib/crawler/topic");
 const { getArticleAttribution } = await import("../src/lib/attribution");
+const { isLowValueRoundup } = await import("../src/lib/crawler/editorial");
 const db = await getDb();
 
 const SESSION_COUNT = Number.parseInt(process.env.SESSIONS ?? "250", 10);
 const HEAD_SIZE = 12;
+const WINDOW_SIZE = 36;
 const scenarios = [
   ["economics"],
   ["math"],
@@ -52,6 +54,24 @@ try {
          AND topic_relevance >= ? AND topic IN (${placeholders})`,
       [MIN_TOPIC_RELEVANCE, ...selectedTopics]
     );
+    const domainAvailability = await db.getAllAsync(
+      `SELECT COUNT(*) AS articles
+       FROM articles
+       WHERE is_archived = 0 AND is_read = 0 AND word_count >= 250
+         AND topic_relevance >= ? AND topic IN (${placeholders})
+       GROUP BY COALESCE(NULLIF(site_domain, ''), site_name)`,
+      [MIN_TOPIC_RELEVANCE, ...selectedTopics]
+    );
+    const evaluatedWindow = Math.min(WINDOW_SIZE, pool.articles);
+    let fairDomainCap = 0;
+    while (
+      domainAvailability.reduce(
+        (sum, domain) => sum + Math.min(domain.articles, fairDomainCap),
+        0
+      ) < evaluatedWindow
+    ) {
+      fairDomainCap++;
+    }
 
     let complete = 0;
     let uniqueDomains = 0;
@@ -61,12 +81,14 @@ try {
     let worstDistinctDomains = Number.POSITIVE_INFINITY;
     let worstTopDomainShare = 0;
     let topicImbalance = 0;
+    let worstWindowDomainCount = 0;
     let sample = [];
 
     for (let session = 0; session < SESSION_COUNT; session++) {
-      const ids = (await loadDeque()).slice(0, HEAD_SIZE);
-      if (ids.length === HEAD_SIZE) complete++;
-      if (ids.length === 0) continue;
+      const ids = (await loadDeque()).slice(0, WINDOW_SIZE);
+      const headIds = ids.slice(0, HEAD_SIZE);
+      if (headIds.length === HEAD_SIZE) complete++;
+      if (headIds.length === 0) continue;
 
       const rows = await db.getAllAsync(
         `SELECT id, title, topic, topic_relevance, site_domain, author_key,
@@ -76,10 +98,11 @@ try {
       );
       const byId = new Map(rows.map((row) => [row.id, row]));
       const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
-      if (session === 0) sample = ordered;
+      const head = ordered.slice(0, HEAD_SIZE);
+      if (session === 0) sample = head;
 
-      const domains = ordered.map((row) => row.site_domain || row.site_name);
-      const authors = ordered.map(
+      const domains = head.map((row) => row.site_domain || row.site_name);
+      const authors = head.map(
         (row) => row.author_key || `site:${row.site_domain || row.site_name}`
       );
       const domainCounts = new Map();
@@ -92,7 +115,16 @@ try {
       worstDistinctDomains = Math.min(worstDistinctDomains, distinctDomains);
       worstTopDomainShare = Math.max(
         worstTopDomainShare,
-        Math.max(...domainCounts.values()) / ordered.length
+        Math.max(...domainCounts.values()) / head.length
+      );
+      const windowCounts = new Map();
+      for (const row of ordered) {
+        const domain = row.site_domain || row.site_name;
+        windowCounts.set(domain, (windowCounts.get(domain) ?? 0) + 1);
+      }
+      worstWindowDomainCount = Math.max(
+        worstWindowDomainCount,
+        ...windowCounts.values()
       );
 
       for (let index = 1; index < domains.length; index++) {
@@ -101,7 +133,7 @@ try {
       }
 
       const topicCounts = selectedTopics.map(
-        (topic) => ordered.filter((row) => row.topic === topic).length
+        (topic) => head.filter((row) => row.topic === topic).length
       );
       if (topicCounts.length > 1) {
         topicImbalance = Math.max(
@@ -130,6 +162,9 @@ try {
     console.log(
       `  worst first-screen domains ${worstDistinctDomains} · worst top-domain share ${(worstTopDomainShare * 100).toFixed(1)}% · adjacent repeats ${adjacentDomainRepeats}/${visiblePairs}`
     );
+    console.log(
+      `  worst publication count in first ${WINDOW_SIZE}: ${worstWindowDomainCount} · fair minimum ${fairDomainCap}`
+    );
     console.log("  sample:");
     for (const row of sample) {
       const attribution = getArticleAttribution(row);
@@ -150,6 +185,21 @@ try {
     if (selectedTopics.length > 1 && topicImbalance > 1) {
       fail(`${label} topic imbalance exceeded one card`);
     }
+    if (worstWindowDomainCount > fairDomainCap) {
+      fail(`${label} exceeded the fairest achievable publication cap of ${fairDomainCap}`);
+    }
+  }
+
+  const visibleRoundups = await db.getAllAsync(
+    `SELECT title FROM articles
+     WHERE is_archived = 0 AND word_count >= 250 AND topic_relevance >= ?`,
+    [MIN_TOPIC_RELEVANCE]
+  );
+  const leakedRoundups = visibleRoundups.filter((row) =>
+    isLowValueRoundup(row.title)
+  );
+  if (leakedRoundups.length > 0) {
+    fail(`roundup cards leaked into recommendations: ${leakedRoundups.map((row) => row.title).join(", ")}`);
   }
 
   const suspiciousEconomics = await db.getAllAsync(

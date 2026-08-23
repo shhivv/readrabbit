@@ -1,7 +1,8 @@
 import { getDb, kvGet, TOPICS, type Topic } from "./db";
 import { refreshIfNeeded } from "./crawler/engine";
 import { MIN_TOPIC_RELEVANCE } from "./crawler/topic";
-import { buildDiverseSlate } from "./recommend";
+import { buildDiverseSlate, deferRecentlySeen } from "./recommend";
+import { exposureGeneration } from "./exposure";
 
 // The deque: an ordered stream of article ids backed entirely by SQLite.
 // SQLite produces a generously sized, relevance-weighted candidate pool.
@@ -10,8 +11,12 @@ import { buildDiverseSlate } from "./recommend";
 // a balanced mix of the topics they explicitly selected.
 
 const MIN_WORDS = 250;
-const WINDOW_SIZE = 60;
-const CANDIDATE_POOL_SIZE = WINDOW_SIZE * 6;
+// Three visible screens are enough runway for instant navigation. Top-ups are
+// local SQLite reads, so precomputing 60 cards only adds ranking work and
+// memory without improving perceived responsiveness.
+const WINDOW_SIZE = 36;
+const CANDIDATE_POOL_SIZE = WINDOW_SIZE * 4;
+const RECENT_EXPOSURE_WINDOW = 12;
 export const LOW_WATER = 12;
 
 // Freshness contract: the reader is a "what's new worth reading" surface.
@@ -34,6 +39,34 @@ interface CandidateRow {
   topic: Topic;
   authorKey: string;
   domain: string;
+}
+
+let recentExposureCache: {
+  generation: number;
+  rows: CandidateRow[];
+} | null = null;
+
+async function getRecentExposure(
+  db: Awaited<ReturnType<typeof getDb>>
+): Promise<CandidateRow[]> {
+  const generation = exposureGeneration();
+  if (recentExposureCache?.generation === generation) {
+    return recentExposureCache.rows;
+  }
+
+  const rows = await db.getAllAsync<CandidateRow>(
+    `SELECT a.id,
+            COALESCE(a.topic, 'technology') AS topic,
+            a.author_key AS authorKey,
+            COALESCE(NULLIF(a.site_domain, ''), 'source:' || a.source_id, 'article:' || a.id) AS domain
+     FROM articles AS a
+     WHERE a.is_read = 1 AND a.read_at IS NOT NULL
+     ORDER BY a.read_at DESC
+     LIMIT ?`,
+    [RECENT_EXPOSURE_WINDOW]
+  );
+  recentExposureCache = { generation, rows };
+  return rows;
 }
 
 function weightedCandidateQuery(topicCount: number): string {
@@ -73,7 +106,11 @@ export async function loadDeque(): Promise<number[]> {
     weightedCandidateQuery(selectedTopics.length),
     [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE]
   );
-  return buildDiverseSlate(rows, WINDOW_SIZE, selectedTopics).map((row) => row.id);
+  const recent = await getRecentExposure(db);
+  const exposureAdjusted = deferRecentlySeen(rows, recent);
+  return buildDiverseSlate(exposureAdjusted, WINDOW_SIZE, selectedTopics).map(
+    (row) => row.id
+  );
 }
 
 export async function countEligible(): Promise<number> {
