@@ -13,6 +13,7 @@ import Animated, {
   Easing,
 } from "react-native-reanimated";
 import { useRouter } from "expo-router";
+import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { colors, fonts, spacing } from "@/lib/theme";
 import { PrimaryButton, TopicCard } from "@/lib/ui";
@@ -141,6 +142,18 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
         >
           YOUR PERSONAL READER
         </Animated.Text>
+        <Animated.View
+          entering={FadeIn.duration(600).delay(100)}
+          style={styles.brandIcon}
+        >
+          <Image
+            source={require("../../assets/images/icon.png")}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            accessible
+            accessibilityLabel="ReadRabbit logo"
+          />
+        </Animated.View>
         <Animated.Text entering={FadeIn.duration(700)} style={styles.logo}>
           ReadRabbit
         </Animated.Text>
@@ -316,6 +329,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     gap: 14,
+  },
+  brandIcon: {
+    width: 128,
+    height: 128,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: "hidden",
+    backgroundColor: "#151515",
   },
   logo: {
     fontFamily: fonts.sansBold,
