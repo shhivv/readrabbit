@@ -75,7 +75,7 @@ let dbInstance: SQLite.SQLiteDatabase | null = null;
 
 export async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbInstance) {
-    dbInstance = await SQLite.openDatabaseAsync("naturallycurious.db");
+    dbInstance = await SQLite.openDatabaseAsync("readrabbit.db");
     await dbInstance.execAsync("PRAGMA journal_mode = WAL");
     // WAL + NORMAL is the standard pairing on mobile flash: commits skip
     // the fsync (the WAL absorbs them), which matters during crawls writing

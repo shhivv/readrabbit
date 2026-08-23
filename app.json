@@ -10,10 +10,10 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.naturallycurious.app"
+      "bundleIdentifier": "com.readrabbit.app"
     },
     "android": {
-      "package": "com.naturallycurious.app",
+      "package": "com.readrabbit.app",
       "adaptiveIcon": {
         "backgroundColor": "#0a0a0a",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
