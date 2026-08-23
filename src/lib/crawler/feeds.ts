@@ -117,7 +117,7 @@ function parseRss(
       title: stripHtml(asText(item["title"])) || "(untitled)",
       author:
         stripHtml(asText(item["dc:creator"])) ||
-        stripHtml(asText((item["author"] as Record<string, unknown>)?.["#text"] ?? "")),
+        stripHtml(asText(item["author"])),
       publishedAt:
         parseDate(asText(item["pubDate"])) ??
         parseDate(asText(item["dc:date"])) ??
@@ -249,6 +249,102 @@ export function tidyFeedTitle(raw: string): string {
   return title.slice(0, 60).replace(/\s\S*$/, "") + "…";
 }
 
+// EconAcademics is a maintained economics-blog aggregator whose current
+// index is HTML (its /feed endpoint is a stale, single-item WordPress feed
+// from 2012). Treating this known index as a syndication document gives the
+// crawler a fresh, multi-publisher economics channel without a server or API
+// key. Keep the adapter deliberately host/path-specific: arbitrary HTML must
+// never be mistaken for a feed or turned into an unbounded link firehose.
+const ECON_ACADEMICS_INDEX = /^https?:\/\/(?:www\.)?econacademics\.org\/(?:en\.html)?(?:[?#].*)?$/i;
+
+function decodeTextEntities(raw: string): string {
+  return raw
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code: string) =>
+      String.fromCodePoint(Number.parseInt(code, 10))
+    )
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) =>
+      String.fromCodePoint(Number.parseInt(code, 16))
+    );
+}
+
+function cleanHtmlText(raw: string): string {
+  return stripHtml(decodeTextEntities(raw));
+}
+
+function cleanAggregatorAuthor(raw: string): string {
+  const author = cleanHtmlText(raw).trim();
+  if (!author || author === "?") return "";
+  // Blogger commonly emits "noreply@blogger.com (Jane Doe)". The display
+  // name is the useful, muteable identity; the transport address is not.
+  const blogger = author.match(/^(?:noreply@blogger\.com|[^\s]+@[^\s]+)\s*\(([^)]+)\)$/i);
+  return blogger?.[1]?.trim() || author;
+}
+
+export function parseKnownAggregatorHtml(
+  htmlText: string,
+  sourceUrl: string
+): ParsedFeed | null {
+  if (!ECON_ACADEMICS_INDEX.test(sourceUrl)) return null;
+
+  const entries: FeedEntry[] = [];
+  const seen = new Set<string>();
+  // The index is intentionally simple server-rendered HTML. Split on list
+  // items first so links cited inside an excerpt cannot be mistaken for the
+  // article's canonical URL.
+  const itemRe = /<li\b[^>]*>([\s\S]*?)(?=<li\b|<\/ul>)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = itemRe.exec(htmlText)) !== null && entries.length < 60) {
+    const item = match[1];
+    const article = item.match(
+      /<b>\s*<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>\s*<\/b>/i
+    );
+    if (!article) continue;
+
+    let url: string;
+    try {
+      url = normalizeEntryUrl(new URL(decodeTextEntities(article[1]), sourceUrl).toString());
+    } catch {
+      continue;
+    }
+    if (!url || seen.has(url) || ECON_ACADEMICS_INDEX.test(url)) continue;
+
+    const byline = item.match(/<br\s*\/?>(?:\s|&nbsp;)*by\s+([\s\S]*?)\s+in\s+<i>/i);
+    const date = item.match(/<\/i>\s*,\s*([^<\r\n]+?)\s*(?=<|$)/i);
+    const summary = item.match(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/i);
+
+    seen.add(url);
+    entries.push({
+      url,
+      title: cleanHtmlText(article[2]) || "(untitled)",
+      author: cleanAggregatorAuthor(byline?.[1] ?? ""),
+      publishedAt: parseDate(cleanHtmlText(date?.[1] ?? "")),
+      summaryHtml: summary?.[1]?.trim() ?? "",
+    });
+  }
+
+  if (entries.length === 0) return null;
+  return {
+    title: "EconAcademics",
+    siteUrl: "https://www.econacademics.org/",
+    entries,
+  };
+}
+
+// Parse ordinary XML first, then explicitly supported aggregator formats.
+// Exported for the discovery channels and their fixture tests so ingestion
+// and source discovery cannot drift into two different interpretations.
+export function parseSyndicationDocument(
+  text: string,
+  sourceUrl: string
+): ParsedFeed | null {
+  return parseFeed(text, sourceUrl) ?? parseKnownAggregatorHtml(text, sourceUrl);
+}
+
 // ---------- fetching + autodiscovery ----------
 
 export async function fetchFeed(source: {
@@ -279,7 +375,10 @@ export async function fetchFeed(source: {
     notModified: false,
     // oversized XML is almost always an error page or a firehose; parsing
     // multi-MB docs spikes memory for no reading value
-    feed: parseFeed(res.text.slice(0, 1_500_000)),
+    feed: parseSyndicationDocument(
+      res.text.slice(0, 1_500_000),
+      res.finalUrl || source.feed_url
+    ),
     etag: res.etag,
     lastModified: res.lastModified,
     finalUrl: res.finalUrl,

@@ -38,6 +38,7 @@
   { "name": "Noah Smith (Noahpinion)", "siteUrl": "https://www.noahpinion.blog", "feedUrl": "https://www.noahpinion.blog/feed", "topic": "economics" },
   { "name": "Robin Hanson (Overcoming Bias)", "siteUrl": "https://www.overcomingbias.com", "feedUrl": "https://www.overcomingbias.com/feed", "topic": "economics" },
   { "name": "Timothy Taylor (Conversable Economist)", "siteUrl": "https://conversableeconomist.blogspot.com", "feedUrl": "https://conversableeconomist.blogspot.com/feeds/posts/default", "topic": "economics" },
+  { "name": "EconAcademics", "siteUrl": "https://www.econacademics.org", "feedUrl": "https://www.econacademics.org/en.html", "topic": "economics", "origin": "aggregator" },
 
   { "name": "Terence Tao", "siteUrl": "https://terrytao.wordpress.com", "feedUrl": "https://terrytao.wordpress.com/feed/", "topic": "math" },
   { "name": "Scott Aaronson", "siteUrl": "https://scottaaronson.blog", "feedUrl": "https://scottaaronson.blog/?feed=rss2", "topic": "math" },
@@ -46,5 +47,6 @@
   { "name": "Timothy Gowers", "siteUrl": "https://gowers.wordpress.com", "feedUrl": "https://gowers.wordpress.com/feed/", "topic": "math" },
   { "name": "The Aperiodical", "siteUrl": "https://aperiodical.com", "feedUrl": "https://aperiodical.com/feed/", "topic": "math" },
   { "name": "The n-Category Café", "siteUrl": "https://golem.ph.utexas.edu/category", "feedUrl": "https://golem.ph.utexas.edu/category/atom10.xml", "topic": "math" },
-  { "name": "Math with Bad Drawings", "siteUrl": "https://mathwithbaddrawings.com", "feedUrl": "https://mathwithbaddrawings.com/feed/", "topic": "math" }
+  { "name": "Math with Bad Drawings", "siteUrl": "https://mathwithbaddrawings.com", "feedUrl": "https://mathwithbaddrawings.com/feed/", "topic": "math" },
+  { "name": "Mathblogging.org", "siteUrl": "https://mathblogging.org", "feedUrl": "https://mathblogging.org/posts.xml", "topic": "math", "origin": "aggregator" }
 ]

@@ -10,11 +10,13 @@ import {
   setArticleContent,
   upsertArticleMeta,
   type ArticleRow,
+  type Topic,
 } from "../db";
 import { fetchText, getHost, HostScheduler, Semaphore } from "./fetcher";
 import { fetchFeed } from "./feeds";
 import {
   collectOutboundLinks,
+  communityDiscover,
   enqueueCandidates,
   flushCandidates,
   hnDiscover,
@@ -25,6 +27,7 @@ import {
 import { extractFromHtml, sanitizeContentHtml, normalizeWhitespace } from "./extract";
 import { renderMathInHtml } from "./math";
 import { scoreArticleQuality } from "./quality";
+import { assessTopic } from "./topic";
 import { pruneStorage } from "../prune";
 
 export type CrawlMode = "initial" | "foreground" | "background";
@@ -145,6 +148,7 @@ async function execute({ mode, onProgress }: CrawlOptions): Promise<void> {
     await mineSeedBlogrolls(network, Date.now() + 30_000);
     await flushCandidates();
     await hnDiscover();
+    await communityDiscover();
     await flushCandidates();
     await probeTopCandidates(DISCOVER_PROBES[mode], Date.now() + 60_000);
     await flushCandidates();
@@ -244,7 +248,11 @@ async function updateFeeds(
           // (summaries can carry full-article HTML; links live in the head)
           if (entry.summaryHtml.length > 200) {
             linkBatch.push(
-              ...collectOutboundLinks(entry.summaryHtml.slice(0, 50_000), entry.url)
+              ...collectOutboundLinks(
+                entry.summaryHtml.slice(0, 50_000),
+                entry.url,
+                { topicHint: asTopic(source.topic) }
+              )
             );
           }
         }
@@ -275,6 +283,14 @@ async function updateFeeds(
             leadImageUrl: "",
             wordCount,
           });
+          const topic = assessTopic(
+            {
+              title: entry.title,
+              excerpt: firstParagraphText(entry.summaryHtml),
+              textContent: text,
+            },
+            asTopic(source.topic)
+          );
           await safeRecord(() =>
             setArticleContent(id, {
               title: entry.title,
@@ -287,6 +303,8 @@ async function updateFeeds(
               leadImageUrl: "",
               wordCount,
               quality,
+              topic: topic.topic,
+              topicRelevance: topic.relevance,
             })
           );
         } catch {}
@@ -369,7 +387,7 @@ async function enrichArticles(
   const cutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
 
   const raw = await db.getAllAsync<ArticleRow>(
-    `SELECT id, source_id, url, title, score, fetched_at FROM articles
+    `SELECT id, source_id, url, title, topic, score, fetched_at FROM articles
      WHERE word_count = 0 AND content_html = ''
        AND fetched_at > ?
        AND (published_date IS NULL OR published_date > ?)
@@ -448,7 +466,9 @@ async function enrichArticles(
       if (res.ok && res.text) {
         // mine outbound links from the full page before extraction trims it
         enqueueCandidates(
-          collectOutboundLinks(res.text.slice(0, 500_000), article.url),
+          collectOutboundLinks(res.text.slice(0, 500_000), article.url, {
+            topicHint: asTopic(article.topic),
+          }),
           "outbound"
         );
 
@@ -460,6 +480,7 @@ async function enrichArticles(
         );
         if (extracted) {
           const { quality } = scoreArticleQuality(extracted);
+          const topic = assessTopic(extracted, asTopic(article.topic));
           await setArticleContent(article.id, {
             title: extracted.title,
             author: extracted.author,
@@ -471,6 +492,8 @@ async function enrichArticles(
             leadImageUrl: extracted.leadImageUrl,
             wordCount: extracted.wordCount,
             quality,
+            topic: topic.topic,
+            topicRelevance: topic.relevance,
           });
           if (article.source_id != null) {
             await safeRecord(() => bumpSourceTrust(article.source_id!, quality));
@@ -491,4 +514,8 @@ async function enrichArticles(
       await new Promise<void>((resolve) => setImmediate(resolve));
     })()
   );
+}
+
+function asTopic(value: string | null | undefined): Topic {
+  return value === "economics" || value === "math" ? value : "technology";
 }

@@ -19,9 +19,13 @@ import {
   kvGet,
   kvSet,
   getBookmarkedArticles,
+  getMutedAuthors,
+  unmuteAuthor,
   type Topic,
   type ArticleRow,
+  type MutedAuthorRow,
 } from "@/lib/db";
+import { getArticleAttribution } from "@/lib/attribution";
 import { refreshIfNeeded } from "@/lib/crawler/engine";
 import { PrimaryButton, TopicCard } from "@/lib/ui";
 
@@ -41,8 +45,10 @@ export default function SettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [bookmarks, setBookmarks] = useState<
-    Pick<ArticleRow, "id" | "title" | "site_name" | "url">[]
+    Pick<ArticleRow, "id" | "title" | "author" | "site_name" | "url">[]
   >([]);
+  const [mutedAuthors, setMutedAuthors] = useState<MutedAuthorRow[]>([]);
+  const [unmuting, setUnmuting] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     (async () => {
@@ -54,6 +60,7 @@ export default function SettingsScreen() {
           setSaved(new Set(list));
         }
         setBookmarks(await getBookmarkedArticles());
+        setMutedAuthors(await getMutedAuthors());
       } catch {}
       setLoading(false);
     })();
@@ -80,16 +87,28 @@ export default function SettingsScreen() {
       const removed = [...saved].filter((t) => !selected.has(t));
 
       if (added.length > 0) {
+        const db = await getDb();
+        for (const topic of added) {
+          // Resume every source the user paused for this topic, including
+          // community-discovered blogs—not only the fixed catalog.
+          await db.runAsync(
+            `UPDATE sources
+             SET status = 'active', consecutive_failures = 0, next_check_at = 0
+             WHERE status = 'paused' AND topic = ?`,
+            [topic]
+          );
+        }
         await seedCatalogSources(added);
       }
       if (removed.length > 0) {
         const db = await getDb();
         for (const topic of removed) {
-          // stop fetching that topic's seeds and pull their unread posts
+          // stop fetching every source for that topic (including community
+          // aggregators and discovered blogs) and pull unread posts
           // from the stream. Bookmarks stay. Re-adding a topic later starts
           // a fresh crawl; old archived posts stay archived.
           await db.runAsync(
-            "UPDATE sources SET status = 'dead' WHERE origin = 'seed' AND topic = ?",
+            "UPDATE sources SET status = 'paused' WHERE topic = ?",
             [topic]
           );
           await db.runAsync(
@@ -105,6 +124,22 @@ export default function SettingsScreen() {
     } finally {
       setSaving(false);
       router.back();
+    }
+  }
+
+  async function handleUnmute(authorKey: string) {
+    setUnmuting((current) => new Set(current).add(authorKey));
+    try {
+      await unmuteAuthor(authorKey);
+      setMutedAuthors((current) =>
+        current.filter((author) => author.author_key !== authorKey)
+      );
+    } finally {
+      setUnmuting((current) => {
+        const next = new Set(current);
+        next.delete(authorKey);
+        return next;
+      });
     }
   }
 
@@ -144,26 +179,70 @@ export default function SettingsScreen() {
                   Bookmarks
                 </Text>
                 <View style={styles.topics}>
-                  {bookmarks.map((b) => (
-                    <Pressable
-                      key={b.id}
-                      style={styles.bookmarkRow}
-                      onPress={() => Linking.openURL(b.url)}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.bookmarkTitle} numberOfLines={2}>
-                          {b.title}
+                  {bookmarks.map((bookmark) => {
+                    const attribution = getArticleAttribution(bookmark);
+                    return (
+                      <Pressable
+                        key={bookmark.id}
+                        style={styles.bookmarkRow}
+                        onPress={() => Linking.openURL(bookmark.url)}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.bookmarkTitle} numberOfLines={2}>
+                            {bookmark.title}
+                          </Text>
+                          {attribution.primary ? (
+                            <Text style={styles.bookmarkSite}>
+                              {attribution.primary}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <Feather
+                          name="arrow-up-right"
+                          size={14}
+                          color={colors.textTertiary}
+                        />
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
+
+            {mutedAuthors.length > 0 ? (
+              <>
+                <Text style={[styles.sectionLabel, { marginTop: spacing.xl }]}>
+                  Muted authors
+                </Text>
+                <View style={styles.topics}>
+                  {mutedAuthors.map((author) => (
+                    <View key={author.author_key} style={styles.mutedAuthorRow}>
+                      <View style={styles.mutedAuthorIdentity}>
+                        <Feather
+                          name="user-x"
+                          size={15}
+                          color={colors.textTertiary}
+                        />
+                        <Text style={styles.mutedAuthorName} numberOfLines={1}>
+                          {author.display_name}
                         </Text>
-                        {b.site_name ? (
-                          <Text style={styles.bookmarkSite}>{b.site_name}</Text>
-                        ) : null}
                       </View>
-                      <Feather
-                        name="arrow-up-right"
-                        size={14}
-                        color={colors.textTertiary}
-                      />
-                    </Pressable>
+                      <Pressable
+                        accessibilityLabel={`Unmute ${author.display_name}`}
+                        accessibilityRole="button"
+                        disabled={unmuting.has(author.author_key)}
+                        hitSlop={8}
+                        onPress={() => handleUnmute(author.author_key)}
+                        style={({ pressed }) => [
+                          styles.unmuteButton,
+                          pressed && styles.unmuteButtonPressed,
+                        ]}
+                      >
+                        <Text style={styles.unmuteLabel}>
+                          {unmuting.has(author.author_key) ? "…" : "Unmute"}
+                        </Text>
+                      </Pressable>
+                    </View>
                   ))}
                 </View>
               </>
@@ -302,6 +381,42 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.textTertiary,
     marginTop: 3,
+  },
+  mutedAuthorRow: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+    backgroundColor: colors.bgRaised,
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+  },
+  mutedAuthorIdentity: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  mutedAuthorName: {
+    flex: 1,
+    fontFamily: fonts.sans,
+    fontSize: 14,
+    color: colors.text,
+  },
+  unmuteButton: {
+    borderRadius: 10,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  unmuteButtonPressed: {
+    backgroundColor: colors.bgActive,
+  },
+  unmuteLabel: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.accent,
   },
   about: {
     alignItems: "center",

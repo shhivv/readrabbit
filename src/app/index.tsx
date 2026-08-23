@@ -39,12 +39,14 @@ import {
   getInterestIndices,
   markRead,
   archiveArticle,
+  muteAuthor,
   setBookmarked,
   toggleInterest,
   kvGet,
   kvSet,
   type ArticleRow,
 } from "@/lib/db";
+import { getArticleAttribution } from "@/lib/attribution";
 import {
   loadDeque,
   topUpDeque,
@@ -532,6 +534,7 @@ function ArticleHeader({
   bookmarked: boolean;
   onToggleBookmark: () => void;
 }) {
+  const attribution = getArticleAttribution(article);
   const bookmarkScale = useSharedValue(1);
   const prevBookmarked = useRef(bookmarked);
 
@@ -556,8 +559,23 @@ function ArticleHeader({
           entering={FadeIn.duration(ENTER_DURATION).easing(ENTER_EASE)}
           style={[styles.metaRow, styles.articleMeta]}
         >
-          {article.site_name ? (
-            <Text style={styles.siteName}>{article.site_name}</Text>
+          {attribution.primary ? (
+            <Text
+              style={[
+                styles.siteName,
+                attribution.hasAuthor && styles.bylineName,
+              ]}
+            >
+              {decodeEntities(attribution.primary)}
+            </Text>
+          ) : null}
+          {attribution.secondary ? (
+            <>
+              <Text style={styles.metaDot}>{"·"}</Text>
+              <Text style={styles.metaDate}>
+                {decodeEntities(attribution.secondary)}
+              </Text>
+            </>
           ) : null}
           {article.published_date ? (
             <>
@@ -593,14 +611,6 @@ function ArticleHeader({
         {decodeEntities(article.title)}
       </Animated.Text>
 
-      {article.author ? (
-        <Animated.Text
-          entering={FadeIn.duration(ENTER_DURATION).easing(ENTER_EASE).delay(120)}
-          style={styles.author}
-        >
-          {decodeEntities(article.author)}
-        </Animated.Text>
-      ) : null}
     </View>
   );
 }
@@ -979,6 +989,76 @@ export default function ReaderScreen() {
     navigate(1);
   }, [article, navigate]);
 
+  const muteCurrentAuthor = useCallback(async () => {
+    const current = articleRef.current;
+    if (!current?.row.author.trim() || navigationInFlightRef.current) return;
+
+    navigationInFlightRef.current = true;
+    const oldIds = dequeRef.current;
+    const oldIndex = currentIndexRef.current;
+
+    try {
+      const mutedIds = new Set(await muteAuthor(current.row.author));
+      if (mutedIds.size === 0) return;
+
+      for (const id of mutedIds) hydrationCache.delete(id);
+
+      const history = oldIds
+        .slice(0, oldIndex)
+        .filter((id) => !mutedIds.has(id));
+      const forward = oldIds
+        .slice(oldIndex + 1)
+        .filter((id) => !mutedIds.has(id));
+      let nextIds = [...history, ...forward];
+      let nextIndex = history.length;
+
+      dequeRef.current = nextIds;
+      setDequeIds(nextIds);
+
+      // The current article must disappear as soon as the preference lands.
+      articleRef.current = null;
+      setArticle(null);
+      setArticleKey((key) => key + 1);
+      kvSet("last_article_id", "").catch(() => {});
+
+      if (nextIndex >= nextIds.length) {
+        const { ids: refilled } = await topUpDeque(nextIds);
+        nextIds = refilled;
+      }
+
+      dequeRef.current = nextIds;
+      setDequeIds(nextIds);
+
+      if (nextIndex >= nextIds.length) {
+        currentIndexRef.current = Math.max(0, nextIds.length - 1);
+        setCurrentIndex(currentIndexRef.current);
+        setStarving(true);
+        return;
+      }
+
+      const next = await hydrate(nextIds[nextIndex]);
+      if (!next) {
+        currentIndexRef.current = Math.max(0, nextIndex - 1);
+        setCurrentIndex(currentIndexRef.current);
+        setStarving(true);
+        return;
+      }
+
+      currentIndexRef.current = nextIndex;
+      setCurrentIndex(nextIndex);
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
+      showArticle(next);
+      prefetchAround(nextIds, nextIndex);
+      setStarving(false);
+    } catch {
+      // The mute is already durable if a later refill or hydration failed.
+      // Leave the muted card hidden while the normal starving poll recovers.
+      setStarving(true);
+    } finally {
+      navigationInFlightRef.current = false;
+    }
+  }, [prefetchAround, showArticle]);
+
   const hasNext = true; // deque refills forward forever
   const hasPrev = currentIndex > 0;
 
@@ -1176,9 +1256,11 @@ export default function ReaderScreen() {
         </GestureDetector>
         <OverflowMenu
           bookmarked={bookmarked}
+          canMuteAuthor={article ? getArticleAttribution(article.row).hasAuthor : false}
           onToggleBookmark={toggleBookmark}
           onShare={shareArticle}
           onNotInterested={notInterested}
+          onMuteAuthor={muteCurrentAuthor}
           onSettings={() => router.push("/settings")}
         />
       </View>
@@ -1193,20 +1275,25 @@ async function setArticleBookmark(articleId: number, next: boolean): Promise<voi
 const OVERFLOW_ITEMS = [
   { key: "bookmark", label: "Bookmark", icon: "bookmark" },
   { key: "share", label: "Share", icon: "share-2" },
+  { key: "mute-author", label: "Mute author", icon: "user-x" },
   { key: "settings", label: "Settings", icon: "settings" },
 ] as const;
 
 function OverflowMenu({
   bookmarked,
+  canMuteAuthor,
   onToggleBookmark,
   onShare,
   onNotInterested,
+  onMuteAuthor,
   onSettings,
 }: {
   bookmarked: boolean;
+  canMuteAuthor: boolean;
   onToggleBookmark: () => void;
   onShare: () => void;
   onNotInterested: () => void;
+  onMuteAuthor: () => void;
   onSettings: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -1237,12 +1324,15 @@ function OverflowMenu({
         case "not-interested":
           onNotInterested();
           break;
+        case "mute-author":
+          onMuteAuthor();
+          break;
         case "settings":
           onSettings();
           break;
       }
     },
-    [close, onToggleBookmark, onShare, onNotInterested, onSettings]
+    [close, onToggleBookmark, onShare, onNotInterested, onMuteAuthor, onSettings]
   );
 
   const overlayStyle = useAnimatedStyle(() => ({
@@ -1299,7 +1389,9 @@ function OverflowMenu({
           pointerEvents={expanded ? "auto" : "none"}
           style={[overflowStyles.menu, menuStyle]}
         >
-          {OVERFLOW_ITEMS.map((item, index) => {
+          {OVERFLOW_ITEMS.filter(
+            (item) => item.key !== "mute-author" || canMuteAuthor
+          ).map((item, index) => {
             const active = item.key === "bookmark" && bookmarked;
             const label = active ? "Bookmarked" : item.label;
 
@@ -1468,6 +1560,10 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 1,
   },
+  bylineName: {
+    textTransform: "none",
+    letterSpacing: 0.25,
+  },
   metaDot: { color: colors.textTertiary, fontSize: 12 },
   metaDate: {
     fontSize: 12,
@@ -1480,11 +1576,6 @@ const styles = StyleSheet.create({
     lineHeight: 36,
     color: colors.text,
     letterSpacing: -0.3,
-  },
-  author: {
-    fontSize: 12,
-    fontFamily: fonts.mono,
-    color: colors.textTertiary,
   },
   actionRow: {
     flexDirection: "row",

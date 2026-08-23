@@ -1,13 +1,17 @@
-import { getDb } from "./db";
+import { getDb, kvGet, TOPICS, type Topic } from "./db";
 import { refreshIfNeeded } from "./crawler/engine";
+import { MIN_TOPIC_RELEVANCE } from "./crawler/topic";
+import { buildDiverseSlate } from "./recommend";
 
 // The deque: an ordered stream of article ids backed entirely by SQLite.
-// Ordering uses weighted sampling without replacement (Efraimidis & Spirakis):
-// key = quality * recency * U(0,1) — high-quality recent posts win, but the
-// shuffle keeps every session fresh. Recency bias per the product brief.
+// SQLite produces a generously sized, relevance-weighted candidate pool.
+// A greedy slate builder then enforces what a user actually experiences:
+// no repeated author/site in the first screen, spaced recurrences later, and
+// a balanced mix of the topics they explicitly selected.
 
 const MIN_WORDS = 250;
 const WINDOW_SIZE = 60;
+const CANDIDATE_POOL_SIZE = WINDOW_SIZE * 6;
 export const LOW_WATER = 12;
 
 // Freshness contract: the reader is a "what's new worth reading" surface.
@@ -15,84 +19,97 @@ export const LOW_WATER = 12;
 //   ingest gate keeps ~90 days of material around, so this rarely binds).
 // - Soft bias: exponential decay with a ~14-day half-life, so last week's
 //   best essay outranks today's mediocre one, but nothing lingers.
-// - Diversity: at most MAX_PER_KEY slots per *author* (falling back to the
-//   site's registrable domain, then source) in any window. Partitioning by
-//   source_id alone lets an author with several feeds — or a multi-author
-//   site with one prolific byline — crowd out everyone else.
-// - Topic mix: the reader explicitly picked their topics, so no single one
-//   may exceed half the window even when its bloggers are prolific.
-const STALE_DAYS = 120;
+// - Relevance: an article must contain evidence for its classified topic. A
+//   feed label alone never makes an off-topic post eligible.
+// - Preferences: selected topics and muted bylines are hard filters.
+const STALE_DAYS = 90;
 const HALF_LIFE_DAYS = 14;
-const MAX_PER_KEY = 3;
-const MAX_PER_TOPIC = Math.ceil(WINDOW_SIZE / 2);
 
 export interface DequeState {
   ids: number[];
 }
 
-function weightedSampleQuery(limit: number): string {
+interface CandidateRow {
+  id: number;
+  topic: Topic;
+  authorKey: string;
+  domain: string;
+}
+
+function weightedCandidateQuery(topicCount: number): string {
   const ageDays =
-    `(strftime('%s','now') * 1000 - COALESCE(published_date, fetched_at)) / 86400000.0`;
+    `(strftime('%s','now') * 1000 - COALESCE(a.published_date, a.fetched_at)) / 86400000.0`;
   const recency = `POWER(0.5, MAX(${ageDays}, -30) / ${HALF_LIFE_DAYS}.0)`;
-  // ABS(RANDOM()) mapped to (0,1]
   const uniform = `((ABS(RANDOM()) % 1000000) + 1) / 1000001.0`;
-  // source trust prior (articles.score mirrors the origin-based source
-  // prior, adapted over time by observed article quality)
-  const trust = `(0.75 + 0.5 * MIN(MAX(score, 0.0), 1.0))`;
-  const key = `(MAX(quality, 0.05) * ${recency} * ${trust} * ${uniform})`;
-  // Dual caps: group blogs publish under rotating bylines, so an
-  // author-only partition lets one domain flood the stream (martinfowler.com
-  // case); a domain-only one over-penalizes a personal blog syndicated at
-  // two domains. Enforce both, whichever binds first.
-  const domainKey = `COALESCE(NULLIF(site_domain, ''), LOWER(TRIM(author)), 'd' || source_id)`;
-  const authorKey = `COALESCE(NULLIF(LOWER(TRIM(author)), ''), site_domain, 'a' || source_id)`;
+  const trust = `(0.75 + 0.5 * MIN(MAX(a.score, 0.0), 1.0))`;
+  const relevance = `(0.35 + 0.65 * a.topic_relevance)`;
+  const key = `(MAX(a.quality, 0.05) * ${relevance} * ${recency} * ${trust} * ${uniform})`;
+  const topicSlots = Array.from({ length: topicCount }, () => "?").join(", ");
   return `
-    SELECT id FROM (
-      SELECT id,
-             key,
-             ROW_NUMBER() OVER (
-               PARTITION BY COALESCE(topic, 'unknown')
-               ORDER BY key DESC
-             ) AS rank_in_topic
-      FROM (
-        SELECT id,
-               topic,
-               ${key} AS key,
-               ROW_NUMBER() OVER (
-                 PARTITION BY ${domainKey}
-                 ORDER BY ${key} DESC
-               ) AS rank_in_domain,
-               ROW_NUMBER() OVER (
-                 PARTITION BY ${authorKey}
-                 ORDER BY ${key} DESC
-               ) AS rank_in_author
-        FROM articles
-        WHERE is_archived = 0 AND is_read = 0
-          AND word_count >= ${MIN_WORDS}
-          AND COALESCE(published_date, fetched_at)
-                > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
+    SELECT a.id,
+           a.topic,
+           a.author_key AS authorKey,
+           COALESCE(NULLIF(a.site_domain, ''), 'source:' || a.source_id, 'article:' || a.id) AS domain
+    FROM articles AS a
+    WHERE a.is_archived = 0 AND a.is_read = 0
+      AND a.word_count >= ${MIN_WORDS}
+      AND a.topic_relevance >= ?
+      AND a.topic IN (${topicSlots})
+      AND COALESCE(a.published_date, a.fetched_at)
+            > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
+      AND NOT EXISTS (
+        SELECT 1 FROM muted_authors AS muted
+        WHERE a.author_key != '' AND muted.author_key = a.author_key
       )
-      WHERE rank_in_domain <= ${MAX_PER_KEY}
-        AND rank_in_author <= ${MAX_PER_KEY}
-    )
-    WHERE rank_in_topic <= ${MAX_PER_TOPIC}
-    ORDER BY key DESC
-    LIMIT ${limit}`;
+    ORDER BY ${key} DESC
+    LIMIT ?`;
 }
 
 export async function loadDeque(): Promise<number[]> {
+  const selectedTopics = await getSelectedTopics();
+  if (selectedTopics.length === 0) return [];
   const db = await getDb();
-  const rows = await db.getAllAsync<{ id: number }>(weightedSampleQuery(WINDOW_SIZE));
-  return rows.map((r) => r.id);
+  const rows = await db.getAllAsync<CandidateRow>(
+    weightedCandidateQuery(selectedTopics.length),
+    [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE]
+  );
+  return buildDiverseSlate(rows, WINDOW_SIZE, selectedTopics).map((row) => row.id);
 }
 
 export async function countEligible(): Promise<number> {
+  const selectedTopics = await getSelectedTopics();
+  if (selectedTopics.length === 0) return 0;
   const db = await getDb();
   const row = await db.getFirstAsync<{ c: number }>(
-    `SELECT COUNT(*) AS c FROM articles WHERE is_archived = 0 AND is_read = 0 AND word_count >= ?`,
-    [MIN_WORDS]
+    `SELECT COUNT(*) AS c
+     FROM articles AS a
+     WHERE a.is_archived = 0 AND a.is_read = 0
+       AND a.word_count >= ?
+       AND a.topic_relevance >= ?
+       AND a.topic IN (${selectedTopics.map(() => "?").join(", ")})
+       AND COALESCE(a.published_date, a.fetched_at)
+             > strftime('%s','now') * 1000 - ${STALE_DAYS} * 86400000
+       AND NOT EXISTS (
+         SELECT 1 FROM muted_authors AS muted
+         WHERE a.author_key != '' AND muted.author_key = a.author_key
+       )`,
+    [MIN_WORDS, MIN_TOPIC_RELEVANCE, ...selectedTopics]
   );
   return row?.c ?? 0;
+}
+
+async function getSelectedTopics(): Promise<Topic[]> {
+  try {
+    const raw = await kvGet("topics");
+    if (raw != null) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        return TOPICS.filter((topic) => parsed.includes(topic));
+      }
+    }
+  } catch {}
+  // Harnesses and pre-topic-selection legacy installs have no preference key.
+  return [...TOPICS];
 }
 
 let topUpInFlight: Promise<{ fresh: number[]; crawling: boolean }> | null = null;

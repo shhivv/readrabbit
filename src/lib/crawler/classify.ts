@@ -129,9 +129,14 @@ export function classifyDomain(urlOrDomain: string): Classification {
 }
 
 export function rootDomain(host: string): string {
-  const parts = host.replace(/^www\./, "").split(".");
+  const normalized = host.replace(/^www\./, "");
+  const parts = normalized.split(".");
   if (parts.length <= 2) return parts.join(".");
   const lastTwo = parts.slice(-2).join(".");
+  // On publishing platforms, the subdomain is the publication identity.
+  // Collapsing Tao and Gowers into "wordpress.com" (or every GitHub Pages
+  // author into "github.io") defeats source diversity instead of enforcing it.
+  if (PLATFORM_ROOTS.has(lastTwo)) return normalized;
   if (TWO_PART_SUFFIXES.has(lastTwo)) {
     return parts.slice(-3).join(".");
   }

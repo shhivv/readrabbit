@@ -47,9 +47,20 @@ async function main() {
   const artCols = (
     await db.getAllAsync<{ name: string }>("PRAGMA table_info(articles)")
   ).map((c) => c.name);
-  for (const col of ["quality", "word_count", "content_html"]) {
+  for (const col of [
+    "quality",
+    "word_count",
+    "content_html",
+    "site_domain",
+    "author_key",
+    "topic_relevance",
+  ]) {
     if (!artCols.includes(col)) fail(`articles missing column: ${col}`);
   }
+  const mutedTable = await db.getFirstAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'muted_authors'"
+  );
+  if (!mutedTable) fail("muted_authors table missing");
   console.log("✓ schema check");
 
   // ---- seed catalog ----
@@ -160,6 +171,25 @@ async function main() {
   console.log(`  enriched (≥250 wds) : ${enriched}  (failed: ${failedCount})`);
   console.log(`  avg quality score   : ${(avgQ ?? 0).toFixed(2)}`);
   console.log(`  with rendered math  : ${withMath[0]?.c ?? 0}`);
+
+  const topicCoverage = await db.getAllAsync<{
+    topic: string;
+    articles: number;
+    domains: number;
+    authors: number;
+  }>(
+    `SELECT topic, COUNT(*) AS articles,
+            COUNT(DISTINCT site_domain) AS domains,
+            COUNT(DISTINCT CASE WHEN author_key != '' THEN author_key END) AS authors
+     FROM articles
+     WHERE word_count >= 250 AND topic_relevance >= 0.4
+     GROUP BY topic ORDER BY topic`
+  );
+  for (const row of topicCoverage) {
+    console.log(
+      `  ${row.topic.padEnd(18)}: ${row.articles} eligible · ${row.domains} domains · ${row.authors} authors`
+    );
+  }
 
   if (enriched === 0) fail("no articles were enriched");
 

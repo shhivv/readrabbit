@@ -1,12 +1,16 @@
 import * as SQLite from "expo-sqlite";
 import { rootDomain } from "./crawler/classify";
 import { convertLatexImages, renderMathInHtml } from "./crawler/math";
+import { cleanAuthorName, normalizeAuthorKey } from "./attribution";
+import { assessTopic } from "./crawler/topic";
+
+export { normalizeAuthorKey } from "./attribution";
 
 export type Topic = "technology" | "economics" | "math";
 export const TOPICS: Topic[] = ["technology", "economics", "math"];
 
 export type SourceOrigin = "seed" | "hn" | "aggregator" | "outbound";
-export type SourceStatus = "active" | "failing" | "dead";
+export type SourceStatus = "active" | "failing" | "dead" | "paused";
 
 export interface SourceRow {
   id: number;
@@ -32,6 +36,7 @@ export interface ArticleRow {
   url: string;
   title: string;
   author: string;
+  author_key: string;
   site_name: string;
   published_date: number | null;
   excerpt: string;
@@ -40,6 +45,7 @@ export interface ArticleRow {
   lead_image_url: string;
   word_count: number;
   topic: string | null;
+  topic_relevance: number;
   fetched_at: number;
   is_read: number;
   is_archived: number;
@@ -47,6 +53,12 @@ export interface ArticleRow {
   read_at: number | null;
   score: number;
   quality: number;
+}
+
+export interface MutedAuthorRow {
+  author_key: string;
+  display_name: string;
+  muted_at: number;
 }
 
 export interface InterestRow {
@@ -57,7 +69,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 5;
+const DB_VERSION = 10;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -120,6 +132,7 @@ async function migrate(db: SQLite.SQLiteDatabase) {
         lead_image_url TEXT NOT NULL DEFAULT '',
         word_count INTEGER NOT NULL DEFAULT 0,
         topic TEXT,
+        topic_relevance REAL NOT NULL DEFAULT 0,
         fetched_at INTEGER NOT NULL,
         is_read INTEGER NOT NULL DEFAULT 0,
         is_archived INTEGER NOT NULL DEFAULT 0,
@@ -246,6 +259,195 @@ async function migrate(db: SQLite.SQLiteDatabase) {
     version = 5;
   }
 
+  // v6: persistent author preferences. Keep the normalized key on each
+  // article so recommendation queries can exclude muted authors cheaply and
+  // consistently even when feed bylines vary in case or whitespace.
+  if (version < 6) {
+    const artInfo = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(articles)"
+    );
+    const present = new Set(artInfo.map((c) => c.name));
+    if (!present.has("author_key")) {
+      await db.execAsync(
+        "ALTER TABLE articles ADD COLUMN author_key TEXT NOT NULL DEFAULT ''"
+      );
+    }
+
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS muted_authors (
+        author_key TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        muted_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_articles_author_key
+        ON articles (author_key);
+    `);
+
+    const authors = await db.getAllAsync<{
+      id: number;
+      author: string;
+      author_key: string;
+    }>("SELECT id, author, author_key FROM articles WHERE author != ''");
+    await db.withTransactionAsync(async () => {
+      for (const article of authors) {
+        const authorKey = normalizeAuthorKey(article.author);
+        if (authorKey && authorKey !== article.author_key) {
+          await db.runAsync(
+            "UPDATE articles SET author_key = ? WHERE id = ?",
+            [authorKey, article.id]
+          );
+        }
+      }
+    });
+    version = 6;
+  }
+
+  // v7: article-level topic evidence. A feed is only a source hint: writers
+  // regularly publish outside their usual subject, so treating every post on
+  // an economics blog as economics is the direct cause of off-topic cards.
+  if (version < 7) {
+    const artInfo = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(articles)"
+    );
+    const present = new Set(artInfo.map((column) => column.name));
+    if (!present.has("topic_relevance")) {
+      await db.execAsync(
+        "ALTER TABLE articles ADD COLUMN topic_relevance REAL NOT NULL DEFAULT 0"
+      );
+    }
+
+    let afterId = 0;
+    for (;;) {
+      const rows = await db.getAllAsync<{
+        id: number;
+        title: string;
+        excerpt: string;
+        text_content: string;
+        topic: string | null;
+      }>(
+        `SELECT id, title, excerpt, text_content, topic
+         FROM articles
+         WHERE id > ? AND word_count > 0
+         ORDER BY id
+         LIMIT 100`,
+        [afterId]
+      );
+      if (rows.length === 0) break;
+
+      await db.withTransactionAsync(async () => {
+        for (const article of rows) {
+          const hint = isTopic(article.topic) ? article.topic : "technology";
+          const assessment = assessTopic(
+            {
+              title: article.title,
+              excerpt: article.excerpt,
+              textContent: article.text_content,
+            },
+            hint
+          );
+          await db.runAsync(
+            "UPDATE articles SET topic = ?, topic_relevance = ? WHERE id = ?",
+            [assessment.topic, assessment.relevance, article.id]
+          );
+        }
+      });
+      afterId = rows[rows.length - 1].id;
+    }
+    version = 7;
+  }
+
+  // v8: hosted publications are distinct sources. The old registrable-domain
+  // backfill collapsed every wordpress.com or github.io writer into one site.
+  if (version < 8) {
+    const rows = await db.getAllAsync<{
+      id: number;
+      url: string;
+      site_domain: string;
+    }>(
+      `SELECT id, url, site_domain FROM articles
+       WHERE site_domain IN ('wordpress.com', 'substack.com', 'github.io',
+                             'blogspot.com', 'ghost.io', 'write.as',
+                             'bearblog.dev', 'mataroa.blog', 'omg.lol')`
+    );
+    await db.withTransactionAsync(async () => {
+      for (const article of rows) {
+        try {
+          const domain = rootDomain(new URL(article.url).host);
+          if (domain !== article.site_domain) {
+            await db.runAsync(
+              "UPDATE articles SET site_domain = ? WHERE id = ?",
+              [domain, article.id]
+            );
+          }
+        } catch {}
+      }
+    });
+    version = 8;
+  }
+
+  // v9: normalize noisy aggregator bylines ("Posted on", "By …",
+  // "… commented on …") so attribution and mute identities stay human.
+  if (version < 9) {
+    const articles = await db.getAllAsync<{
+      id: number;
+      author: string;
+      author_key: string;
+    }>("SELECT id, author, author_key FROM articles WHERE author != ''");
+    await db.withTransactionAsync(async () => {
+      for (const article of articles) {
+        const authorKey = normalizeAuthorKey(article.author);
+        if (authorKey !== article.author_key) {
+          await db.runAsync(
+            "UPDATE articles SET author_key = ? WHERE id = ?",
+            [authorKey, article.id]
+          );
+        }
+      }
+
+      const muted = await db.getAllAsync<MutedAuthorRow>(
+        "SELECT author_key, display_name, muted_at FROM muted_authors"
+      );
+      for (const author of muted) {
+        const displayName = cleanAuthorName(author.display_name);
+        const authorKey = normalizeAuthorKey(displayName);
+        if (!authorKey) {
+          await db.runAsync(
+            "DELETE FROM muted_authors WHERE author_key = ?",
+            [author.author_key]
+          );
+        } else if (authorKey !== author.author_key || displayName !== author.display_name) {
+          await db.runAsync(
+            `INSERT INTO muted_authors (author_key, display_name, muted_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(author_key) DO UPDATE SET
+               display_name = excluded.display_name,
+               muted_at = MAX(muted_authors.muted_at, excluded.muted_at)`,
+            [authorKey, displayName, author.muted_at]
+          );
+          if (authorKey !== author.author_key) {
+            await db.runAsync(
+              "DELETE FROM muted_authors WHERE author_key = ?",
+              [author.author_key]
+            );
+          }
+        }
+      }
+    });
+    version = 9;
+  }
+
+  // v10: the reader queries this exact prefix on every load/top-up. Keeping
+  // topic and relevance in the queue index makes serving cost stay flat as
+  // the local cache grows; ranking still touches at most 360 eligible rows.
+  if (version < 10) {
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_articles_recommend
+        ON articles (is_archived, is_read, topic, topic_relevance);
+    `);
+    version = 10;
+  }
+
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);
 }
 
@@ -329,23 +531,38 @@ export async function seedCatalogSources(topics: Topic[]): Promise<number> {
     siteUrl: string;
     feedUrl: string;
     topic: Topic;
+    origin?: SourceOrigin;
   }> = require("../../assets/seed-sources.json");
 
   let added = 0;
   for (const entry of catalog) {
     if (!topics.includes(entry.topic)) continue;
     const db = await getDb();
-    const existing = await db.getFirstAsync(
-      "SELECT id FROM sources WHERE feed_url = ?",
+    const existing = await db.getFirstAsync<{ id: number; status: SourceStatus }>(
+      "SELECT id, status FROM sources WHERE feed_url = ?",
       [entry.feedUrl]
     );
-    if (existing) continue;
+    if (existing) {
+      // Topic removal pauses every source in that topic. Re-selecting it must
+      // revive catalog sources instead of silently leaving their old rows dead.
+      if (existing.status === "dead" || existing.status === "paused") {
+        await db.runAsync(
+          `UPDATE sources
+           SET status = 'active', consecutive_failures = 0,
+               next_check_at = 0, topic = ?, origin = ?
+           WHERE id = ?`,
+          [entry.topic, entry.origin ?? "seed", existing.id]
+        );
+        added++;
+      }
+      continue;
+    }
     await upsertSource({
       siteUrl: entry.siteUrl,
       feedUrl: entry.feedUrl,
       name: entry.name,
       topic: entry.topic,
-      origin: "seed",
+      origin: entry.origin ?? "seed",
     });
     added++;
   }
@@ -464,15 +681,16 @@ export async function upsertArticleMeta(input: {
   } catch {}
   const result = await db.runAsync(
     `INSERT INTO articles
-       (source_id, url, title, author, site_name, published_date, excerpt,
-        topic, fetched_at, score, site_domain)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (source_id, url, title, author, author_key, site_name, published_date,
+        excerpt, topic, fetched_at, score, site_domain)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(url) DO NOTHING`,
     [
       input.sourceId,
       input.url,
       input.title,
       input.author,
+      normalizeAuthorKey(input.author),
       input.siteName,
       input.publishedDate,
       input.excerpt,
@@ -487,9 +705,20 @@ export async function upsertArticleMeta(input: {
   await db.runAsync(
     `UPDATE articles SET
        title = CASE WHEN title = '' AND ? != '' THEN ? ELSE title END,
+       author = CASE WHEN author = '' AND ? != '' THEN ? ELSE author END,
+       author_key = CASE WHEN author_key = '' AND ? != '' THEN ? ELSE author_key END,
        published_date = COALESCE(published_date, ?)
      WHERE url = ?`,
-    [input.title, input.title, input.publishedDate, input.url]
+    [
+      input.title,
+      input.title,
+      input.author,
+      input.author,
+      input.author,
+      normalizeAuthorKey(input.author),
+      input.publishedDate,
+      input.url,
+    ]
   );
   return null;
 }
@@ -507,13 +736,17 @@ export async function setArticleContent(
     leadImageUrl?: string;
     wordCount?: number;
     quality?: number;
+    topic?: Topic;
+    topicRelevance?: number;
   }
 ): Promise<void> {
   const db = await getDb();
+  const author = content.author ?? "";
   await db.runAsync(
     `UPDATE articles SET
        title = COALESCE(NULLIF(?, ''), title),
        author = COALESCE(NULLIF(?, ''), author),
+       author_key = CASE WHEN ? != '' THEN ? ELSE author_key END,
        site_name = COALESCE(NULLIF(?, ''), site_name),
        published_date = COALESCE(published_date, ?),
        excerpt = COALESCE(NULLIF(?, ''), excerpt),
@@ -521,11 +754,15 @@ export async function setArticleContent(
        text_content = ?,
        lead_image_url = ?,
        word_count = ?,
-       quality = ?
+       quality = ?,
+       topic = COALESCE(?, topic),
+       topic_relevance = COALESCE(?, topic_relevance)
      WHERE id = ?`,
     [
       content.title ?? "",
-      content.author ?? "",
+      author,
+      author,
+      normalizeAuthorKey(author),
       content.siteName ?? "",
       content.publishedDate ?? null,
       content.excerpt ?? "",
@@ -534,9 +771,15 @@ export async function setArticleContent(
       content.leadImageUrl ?? "",
       content.wordCount ?? 0,
       content.quality ?? 0,
+      content.topic ?? null,
+      content.topicRelevance ?? null,
       articleId,
     ]
   );
+}
+
+function isTopic(value: string | null): value is Topic {
+  return value === "technology" || value === "economics" || value === "math";
 }
 
 export async function markArticleFailed(articleId: number): Promise<void> {
@@ -598,12 +841,56 @@ export async function setBookmarked(
 }
 
 export async function getBookmarkedArticles(): Promise<
-  Pick<ArticleRow, "id" | "title" | "site_name" | "url">[]
+  Pick<ArticleRow, "id" | "title" | "author" | "site_name" | "url">[]
 > {
   const db = await getDb();
   return db.getAllAsync(
-    "SELECT id, title, site_name, url FROM articles WHERE is_bookmarked = 1 ORDER BY read_at DESC"
+    "SELECT id, title, author, site_name, url FROM articles WHERE is_bookmarked = 1 ORDER BY read_at DESC"
   );
+}
+
+// ---------- author preferences ----------
+
+export async function getMutedAuthors(): Promise<MutedAuthorRow[]> {
+  const db = await getDb();
+  return db.getAllAsync<MutedAuthorRow>(
+    "SELECT author_key, display_name, muted_at FROM muted_authors ORDER BY muted_at DESC"
+  );
+}
+
+/**
+ * Persist an author mute and return every matching article id so an already
+ * loaded in-memory deque can remove those cards immediately.
+ */
+export async function muteAuthor(author: string): Promise<number[]> {
+  const displayName = cleanAuthorName(author);
+  const authorKey = normalizeAuthorKey(displayName);
+  if (!authorKey) return [];
+
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT INTO muted_authors (author_key, display_name, muted_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(author_key) DO UPDATE SET
+       display_name = excluded.display_name,
+       muted_at = excluded.muted_at`,
+    [authorKey, displayName, Date.now()]
+  );
+
+  const rows = await db.getAllAsync<{ id: number }>(
+    "SELECT id FROM articles WHERE author_key = ?",
+    [authorKey]
+  );
+  return rows.map((row) => row.id);
+}
+
+export async function unmuteAuthor(authorKey: string): Promise<void> {
+  const normalizedKey = normalizeAuthorKey(authorKey);
+  if (!normalizedKey) return;
+  const db = await getDb();
+  await db.runAsync("DELETE FROM muted_authors WHERE author_key = ?", [
+    normalizedKey,
+  ]);
 }
 
 // ---------- interests ----------

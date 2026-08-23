@@ -3,11 +3,15 @@ import {
   looksLikeArticlePath,
   rootDomain,
 } from "./classify";
-import { discoverFeedUrl, parseFeed } from "./feeds";
+import { discoverFeedUrl, parseFeed, parseSyndicationDocument } from "./feeds";
 import { fetchText, getHost, HostScheduler } from "./fetcher";
-import { getDb, upsertSource } from "../db";
-import type { Topic } from "../db";
-import { kvGetJson, kvSetJson } from "../db";
+import {
+  getDb,
+  kvGetJson,
+  kvSetJson,
+  upsertSource,
+  type Topic,
+} from "../db";
 
 // Discovery finds new personal blogs by mining links that seeded sources
 // already cite, plus Hacker News for technology. Repeatedly-cited domains
@@ -20,13 +24,14 @@ interface CandidatePool {
     count: number;
     topic: Topic;
     addedAt: number;
-    origin: "outbound" | "hn";
+    origin: "outbound" | "hn" | "aggregator";
   };
 }
 
 const CANDIDATES_KEY = "disco:candidates";
 const REJECTED_KEY = "disco:rejected";
 const HN_LAST_KEY = "disco:hn_last_at";
+const COMMUNITY_LAST_KEY = "disco:community_last_at";
 
 // The pool lives in memory during a crawl and is persisted only at phase
 // boundaries (flushCandidates). The old write-through version re-serialized
@@ -71,7 +76,7 @@ function normalizeCandidateUrl(url: string): {
 export function collectOutboundLinks(
   html: string,
   baseUrl: string,
-  options: { allowRootPaths?: boolean } = {}
+  options: { allowRootPaths?: boolean; topicHint?: Topic } = {}
 ): Array<{ url: string; topicHint: Topic }> {
   try {
     const base = new URL(baseUrl);
@@ -101,7 +106,7 @@ export function collectOutboundLinks(
       const cls = classifyDomain(abs);
       if (!cls.allowed) continue;
       seen.add(abs);
-      results.push({ url: abs, topicHint: "technology" });
+      results.push({ url: abs, topicHint: options.topicHint ?? "technology" });
     }
     return results;
   } catch {
@@ -111,7 +116,7 @@ export function collectOutboundLinks(
 
 export function enqueueCandidates(
   links: Array<{ url: string; topicHint?: Topic }>,
-  origin: "outbound" | "hn"
+  origin: "outbound" | "hn" | "aggregator"
 ): void {
   if (!links.length || !poolCache) return;
   let changed = false;
@@ -121,6 +126,13 @@ export function enqueueCandidates(
     const existing = poolCache[normalized.domain];
     if (existing) {
       existing.count += 1;
+      // A topic-specific aggregator is stronger evidence than an incidental
+      // cross-link. This also repairs old candidates written by the former
+      // hard-coded-technology outbound collector.
+      if (origin === "aggregator" && link.topicHint) {
+        existing.topic = link.topicHint;
+        existing.origin = "aggregator";
+      }
       changed = true; // citation counts feed probe ranking — persist them
       continue;
     }
@@ -144,7 +156,14 @@ export function enqueueCandidates(
   if (changed) poolDirty = true;
 }
 
-export async function hnDiscover(): Promise<number> {
+export async function hnDiscover(
+  selectedTopics?: readonly Topic[]
+): Promise<number> {
+  const selected = selectedTopics
+    ? new Set(selectedTopics)
+    : await activeTopics();
+  if (!selected.has("technology")) return 0;
+
   const last = (await kvGetJson<number>(HN_LAST_KEY)) ?? 0;
   if (Date.now() - last < 12 * 60 * 60 * 1000) return 0;
 
@@ -174,6 +193,114 @@ export async function hnDiscover(): Promise<number> {
   }
 }
 
+interface CommunityChannel {
+  id: string;
+  topic: Topic;
+  url: string;
+}
+
+// These are discovery inputs, not recommendation sources: their entries
+// point at independent publishers, whose own feed is verified before being
+// added. Mathblogging is maintained specifically as a map of the mathematical
+// blogosphere; EconAcademics monitors economics-research blogs and updates its
+// English index twice daily. Both are public and require no account/API key.
+const COMMUNITY_CHANNELS: readonly CommunityChannel[] = [
+  {
+    id: "mathblogging-posts",
+    topic: "math",
+    url: "https://mathblogging.org/posts.xml",
+  },
+  {
+    id: "econacademics-en",
+    topic: "economics",
+    url: "https://www.econacademics.org/en.html",
+  },
+];
+
+async function activeTopics(): Promise<Set<Topic>> {
+  const stored = await kvGetJson<unknown>("topics");
+  if (Array.isArray(stored)) {
+    return new Set(
+      stored.filter((topic): topic is Topic =>
+        topic === "technology" || topic === "economics" || topic === "math"
+      )
+    );
+  }
+
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ topic: string }>(
+    `SELECT DISTINCT topic FROM sources
+     WHERE status IN ('active', 'failing')`
+  );
+  return new Set(
+    rows
+      .map((row) => row.topic)
+      .filter((topic): topic is Topic =>
+        topic === "technology" || topic === "economics" || topic === "math"
+      )
+  );
+}
+
+// Pull rolling, topic-specific community indexes into the candidate pool.
+// A caller may pass the selected topics directly; otherwise we infer them
+// from the locally seeded active sources. Successful channels are throttled
+// independently so a broken endpoint does not suppress the others.
+export async function communityDiscover(
+  selectedTopics?: readonly Topic[]
+): Promise<number> {
+  const selected = selectedTopics
+    ? new Set(selectedTopics)
+    : await activeTopics();
+  const last =
+    (await kvGetJson<Record<string, number>>(COMMUNITY_LAST_KEY)) ?? {};
+  const refreshMs = 12 * 60 * 60 * 1000;
+  const now = Date.now();
+  let discovered = 0;
+
+  await loadCandidates();
+  const due = COMMUNITY_CHANNELS.filter(
+    (channel) =>
+      selected.has(channel.topic) &&
+      now - (last[channel.id] ?? 0) >= refreshMs
+  );
+  // The channels live on different hosts. Fetching them together removes a
+  // full network round trip from all-topic discovery without increasing load
+  // on either publisher.
+  const fetched = await Promise.all(
+    due.map(async (channel) => {
+      try {
+        const res = await fetchText(channel.url, { timeoutMs: 15_000 });
+        if (!res.ok || !res.text) return null;
+        const parsed = parseSyndicationDocument(
+          res.text.slice(0, 1_500_000),
+          res.finalUrl || channel.url
+        );
+        return parsed?.entries.length ? { channel, parsed } : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  for (const result of fetched) {
+    if (!result) continue;
+    const before = Object.keys(poolCache ?? {}).length;
+    enqueueCandidates(
+      result.parsed.entries.map((entry) => ({
+        url: entry.url,
+        topicHint: result.channel.topic,
+      })),
+      "aggregator"
+    );
+    discovered += Object.keys(poolCache ?? {}).length - before;
+    last[result.channel.id] = now;
+  }
+
+  await flushCandidates();
+  await kvSetJson(COMMUNITY_LAST_KEY, last);
+  return discovered;
+}
+
 const BLOGROLL_MINED_KEY = "disco:blogroll_mined_at";
 const BLOGROLL_REMINE_DAYS = 30;
 // Pages personal blogs keep specifically to recommend other writing.
@@ -189,8 +316,8 @@ export async function mineSeedBlogrolls(
 ): Promise<void> {
   const minedAt = (await kvGetJson<Record<string, number>>(BLOGROLL_MINED_KEY)) ?? {};
   const db = await getDb();
-  const sources = await db.getAllAsync<{ id: number; site_url: string }>(
-    `SELECT id, site_url FROM sources WHERE status = 'active' ORDER BY origin ASC`
+  const sources = await db.getAllAsync<{ id: number; site_url: string; topic: Topic }>(
+    `SELECT id, site_url, topic FROM sources WHERE status = 'active' ORDER BY origin ASC`
   );
 
   await loadCandidates();
@@ -219,7 +346,7 @@ export async function mineSeedBlogrolls(
         const links = collectOutboundLinks(
           res.text.slice(0, 300_000),
           res.finalUrl || pageUrl,
-          { allowRootPaths: true }
+          { allowRootPaths: true, topicHint: source.topic }
         );
         enqueueCandidates(links, "outbound");
         // any page that yields links counts as mined; don't try deeper paths
@@ -322,7 +449,7 @@ export async function probeTopCandidates(
     .filter(([domain]) => rejected[domain] == null)
     // outbound candidates need ≥2 independent citations: single-link
     // accidents are how share widgets and vendor pages got in before.
-    .filter(([, c]) => c.origin === "hn" || c.count >= 2)
+    .filter(([, c]) => c.origin === "hn" || c.origin === "aggregator" || c.count >= 2)
     .sort((a, b) => b[1].count - a[1].count);
 
   const db = await getDb();
