@@ -26,7 +26,7 @@ import {
   type MutedAuthorRow,
 } from "@/lib/db";
 import { getArticleAttribution } from "@/lib/attribution";
-import { refreshIfNeeded } from "@/lib/crawler/engine";
+import { runCrawl } from "@/lib/crawler/engine";
 import { PrimaryButton, TopicCard } from "@/lib/ui";
 
 const GITHUB_URL = "https://github.com/shhivv/readrabbit";
@@ -120,7 +120,10 @@ export default function SettingsScreen() {
 
       await kvSet("topics", JSON.stringify([...selected]));
       setSaved(new Set(selected));
-      refreshIfNeeded().catch(() => {});
+      // A preference change is explicit user intent, so bypass the ordinary
+      // four-hour refresh throttle. The mounted reader will rebuild on focus
+      // while this crawl starts filling any newly selected topic.
+      runCrawl({ mode: "background" }).catch(() => {});
     } finally {
       setSaving(false);
       router.back();

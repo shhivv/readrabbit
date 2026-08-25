@@ -32,7 +32,7 @@ import { Feather } from "@expo/vector-icons";
 import RenderHtml from "react-native-render-html";
 import { Image as ExpoImage } from "expo-image";
 import { parseHTML } from "linkedom";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 
 import {
   getArticleById,
@@ -48,6 +48,7 @@ import {
 } from "@/lib/db";
 import { getArticleAttribution } from "@/lib/attribution";
 import {
+  loadDiverseOpeningDeque,
   loadDeque,
   topUpDeque,
   LOW_WATER,
@@ -65,6 +66,8 @@ const SWIPE_ACTIVATION_DISTANCE = 20;
 const SWIPE_COMMIT_DISTANCE = 60;
 const SWIPE_FLICK_VELOCITY = 500;
 const BOOKMARK_BLUE = "#4da3ff";
+const DIVERSE_OPENING_READY_KEY = "diverse_opening_ready_v1";
+const DIVERSE_OPENING_MAX_WAIT_MS = 12_000;
 
 // ---------- article model ----------
 
@@ -672,6 +675,9 @@ export default function ReaderScreen() {
   const opacity = useSharedValue(1);
   const swipeCommitted = useSharedValue(false);
   const navigationInFlightRef = useRef(false);
+  const requiresDiverseOpeningRef = useRef(false);
+  const diverseOpeningStartedAtRef = useRef(0);
+  const selectedTopicsKeyRef = useRef<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
 
   const prefetchAround = useCallback((ids: number[], index: number) => {
@@ -706,52 +712,105 @@ export default function ReaderScreen() {
     setArticle(value);
     setBookmarkedState(!!value.row.is_bookmarked);
     setArticleKey((k) => k + 1);
-    kvSet("last_article_id", String(value.row.id)).catch(() => {});
     markRead(value.row.id).catch(() => {});
   }, []);
 
-  // boot: restore last position or start fresh deque
+  const loadReaderIds = useCallback(async () => {
+    if (!requiresDiverseOpeningRef.current) return loadDeque();
+
+    const diverse = await loadDiverseOpeningDeque();
+    if (diverse.length > 0) return diverse;
+    if (
+      Date.now() - diverseOpeningStartedAtRef.current >=
+      DIVERSE_OPENING_MAX_WAIT_MS
+    ) {
+      // Offline and depleted libraries must remain readable. The next normal
+      // crawl/refill still uses persistent identity cooling; this fallback
+      // only bounds the one-time strict opening wait.
+      return loadDeque();
+    }
+    return [];
+  }, []);
+
+  const installReaderIds = useCallback(
+    async (ids: number[]): Promise<boolean> => {
+      if (ids.length === 0) return false;
+      const first = await hydrate(ids[0]);
+      if (!first) return false;
+
+      dequeRef.current = ids;
+      setDequeIds(ids);
+      currentIndexRef.current = 0;
+      setCurrentIndex(0);
+      showArticle(first);
+      prefetchAround(ids, 0);
+
+      // Persist readiness only after a card really hydrated. A broken row can
+      // no longer permanently bypass the first-opening contract.
+      if (requiresDiverseOpeningRef.current) {
+        requiresDiverseOpeningRef.current = false;
+        await kvSet(DIVERSE_OPENING_READY_KEY, "1");
+      }
+      return true;
+    },
+    [prefetchAround, showArticle]
+  );
+
+  // Boot into a fresh unseen card. On the first run after this diversity
+  // contract ships, wait for a genuinely varied opening rather than serving
+  // whichever prolific feed happened to finish first.
   useEffect(() => {
     setLoading(true);
     (async () => {
       refreshIfNeeded().catch(() => {});
 
-      let ids = await loadDeque();
-      const savedIdRaw = await kvGet("last_article_id");
-      const savedId = savedIdRaw ? parseInt(savedIdRaw, 10) : NaN;
-
-      if (!Number.isNaN(savedId)) {
-        const saved = await hydrate(savedId);
-        if (saved) {
-          ids = ids.filter((id) => id !== savedId);
-          ids.unshift(savedId);
-        }
-      }
-
-      dequeRef.current = ids;
-      setDequeIds(ids);
-
-      if (ids.length === 0) {
+      selectedTopicsKeyRef.current = (await kvGet("topics")) ?? "";
+      const openingReady = await kvGet(DIVERSE_OPENING_READY_KEY);
+      requiresDiverseOpeningRef.current = openingReady !== "1";
+      diverseOpeningStartedAtRef.current = Date.now();
+      const ids = await loadReaderIds();
+      if (!(await installReaderIds(ids))) {
         setLoading(false);
         setStarving(true); // poll loop picks up as the crawl lands posts
         return;
       }
-
-      const firstId = Number.isNaN(savedId)
-        ? ids[0]
-        : ids.includes(savedId)
-          ? savedId
-          : ids[0];
-      const firstIdx = ids.indexOf(firstId);
-      currentIndexRef.current = firstIdx;
-      setCurrentIndex(firstIdx);
-
-      const first = await hydrate(firstId);
-      if (first) showArticle(first);
-      prefetchAround(ids, firstIdx);
       setLoading(false);
     })();
-  }, [showArticle, prefetchAround]);
+  }, [installReaderIds, loadReaderIds]);
+
+  // The reader stays mounted beneath the settings modal. Rebuild its queue
+  // when topic preferences change so removed topics disappear immediately
+  // and a newly selected topic participates in the next balanced generation.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        const topicsKey = (await kvGet("topics")) ?? "";
+        if (cancelled) return;
+        if (selectedTopicsKeyRef.current == null) {
+          selectedTopicsKeyRef.current = topicsKey;
+          return;
+        }
+        if (selectedTopicsKeyRef.current === topicsKey) return;
+        selectedTopicsKeyRef.current = topicsKey;
+
+        hydrationCache.clear();
+        dequeRef.current = [];
+        setDequeIds([]);
+        currentIndexRef.current = 0;
+        setCurrentIndex(0);
+        articleRef.current = null;
+        setArticle(null);
+        requiresDiverseOpeningRef.current = true;
+        diverseOpeningStartedAtRef.current = Date.now();
+        setLoading(false);
+        setStarving(true);
+      })().catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   // starving: nothing readable yet (first run or drained) — poll until the
   // background crawl lands enriched posts in the database
@@ -761,19 +820,10 @@ export default function ReaderScreen() {
 
     const tick = async () => {
       try {
-        const ids = await loadDeque();
+        const ids = await loadReaderIds();
         if (cancelled) return;
-        if (ids.length > 0) {
-          dequeRef.current = ids;
-          setDequeIds(ids);
-          currentIndexRef.current = 0;
-          setCurrentIndex(0);
-          const first = await hydrate(ids[0]);
-          if (!cancelled && first) {
-            showArticle(first);
-            prefetchAround(ids, 0);
-            setStarving(false);
-          }
+        if (await installReaderIds(ids)) {
+          if (!cancelled) setStarving(false);
         }
       } catch {
         // keep polling
@@ -786,7 +836,7 @@ export default function ReaderScreen() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [starving, loading, showArticle, prefetchAround]);
+  }, [starving, loading, installReaderIds, loadReaderIds]);
 
   const pendingReveal = useRef<"instant" | "fade">("instant");
 
@@ -1019,7 +1069,6 @@ export default function ReaderScreen() {
       articleRef.current = null;
       setArticle(null);
       setArticleKey((key) => key + 1);
-      kvSet("last_article_id", "").catch(() => {});
 
       if (nextIndex >= nextIds.length) {
         const { ids: refilled } = await topUpDeque(nextIds);

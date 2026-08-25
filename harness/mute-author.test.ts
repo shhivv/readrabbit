@@ -74,7 +74,7 @@ const {
   unmuteAuthor,
   upsertArticleMeta,
 } = await import("../src/lib/db");
-const { loadDeque } = await import("../src/lib/deque");
+const { countEligibleByTopic, loadDeque } = await import("../src/lib/deque");
 
 describe("article attribution", () => {
   test("promotes the author while retaining the publication as context", () => {
@@ -440,6 +440,9 @@ describe("author preference and exposure persistence", () => {
       math: 18,
       technology: 18,
     });
+    const eligibleByTopic = await countEligibleByTopic();
+    expect(eligibleByTopic.get("math")).toBeGreaterThanOrEqual(18);
+    expect(eligibleByTopic.get("technology")).toBeGreaterThanOrEqual(18);
 
     if (previousTopics == null) {
       await db.runAsync("DELETE FROM kv WHERE key = 'topics'");

@@ -1,5 +1,5 @@
 import { getDb, kvGet, TOPICS, type Topic } from "./db";
-import { refreshIfNeeded } from "./crawler/engine";
+import { runCrawl } from "./crawler/engine";
 import { MIN_TOPIC_RELEVANCE } from "./crawler/topic";
 import {
   buildDiverseSlate,
@@ -214,11 +214,19 @@ async function loadDiversityContext(
 }
 
 export async function countEligible(): Promise<number> {
+  const counts = await countEligibleByTopic();
+  return [...counts.values()].reduce((sum, count) => sum + count, 0);
+}
+
+export async function countEligibleByTopic(): Promise<Map<Topic, number>> {
   const selectedTopics = await getSelectedTopics();
-  if (selectedTopics.length === 0) return 0;
+  const counts = new Map<Topic, number>(
+    selectedTopics.map((topic) => [topic, 0])
+  );
+  if (selectedTopics.length === 0) return counts;
   const db = await getDb();
-  const row = await db.getFirstAsync<{ c: number }>(
-    `SELECT COUNT(*) AS c
+  const rows = await db.getAllAsync<{ topic: Topic; c: number }>(
+    `SELECT a.topic, COUNT(*) AS c
      FROM articles AS a
      WHERE a.is_archived = 0 AND a.is_read = 0
        AND a.word_count >= ?
@@ -229,10 +237,12 @@ export async function countEligible(): Promise<number> {
        AND NOT EXISTS (
          SELECT 1 FROM muted_authors AS muted
          WHERE a.author_key != '' AND muted.author_key = a.author_key
-       )`,
+       )
+     GROUP BY a.topic`,
     [MIN_WORDS, MIN_TOPIC_RELEVANCE, ...selectedTopics]
   );
-  return row?.c ?? 0;
+  for (const row of rows) counts.set(row.topic, row.c);
+  return counts;
 }
 
 async function getSelectedTopics(): Promise<Topic[]> {
@@ -281,14 +291,14 @@ async function fetchTopUpCandidates(currentIds: readonly number[]): Promise<{
   fresh: number[];
   crawling: boolean;
 }> {
-  const eligible = await countEligible();
+  const eligibleByTopic = await countEligibleByTopic();
   let crawling = false;
 
-  if (eligible < LOW_WATER) {
+  if ([...eligibleByTopic.values()].some((count) => count < LOW_WATER)) {
     crawling = true;
     // fire-and-forget: the reader keeps its current article visible while
     // the local crawler produces more candidates.
-    refreshIfNeeded();
+    runCrawl({ mode: "foreground" }).catch(() => {});
     // give the crawl a short window to produce something before requerying
     await new Promise<void>((resolve) => setTimeout(resolve, 4000));
   }
