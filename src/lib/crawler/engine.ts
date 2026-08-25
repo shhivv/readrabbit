@@ -14,7 +14,7 @@ import {
   type Topic,
 } from "../db";
 import { fetchText, getHost, HostScheduler, Semaphore } from "./fetcher";
-import { fetchFeed } from "./feeds";
+import { fetchFeed, selectFeedEntriesByDomain } from "./feeds";
 import {
   collectOutboundLinks,
   communityDiscover,
@@ -308,6 +308,16 @@ export function maxEntriesForSourceOrigin(origin: string): number {
     : MAX_ENTRIES_PER_SOURCE;
 }
 
+export function selectEntriesForSourceOrigin<T extends import("./feeds").FeedEntry>(
+  entries: readonly T[],
+  origin: string
+): T[] {
+  const limit = maxEntriesForSourceOrigin(origin);
+  return origin === "aggregator"
+    ? (selectFeedEntriesByDomain(entries, limit) as T[])
+    : entries.slice(0, limit);
+}
+
 export function siteNameForFeedEntry(
   origin: string,
   entryUrl: string,
@@ -375,8 +385,10 @@ async function updateFeeds(
       // transaction is an fsync, so 30 individual inserts would mean 30
       // syncs; batched they cost one.
       await db.withTransactionAsync(async () => {
-        const entryLimit = maxEntriesForSourceOrigin(source.origin);
-        for (const entry of res.feed!.entries.slice(0, entryLimit)) {
+        for (const entry of selectEntriesForSourceOrigin(
+          res.feed!.entries,
+          source.origin
+        )) {
           if (isLowValueRoundup(entry.title)) {
             continue;
           }

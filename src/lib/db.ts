@@ -79,7 +79,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 13;
+const DB_VERSION = 14;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -562,6 +562,74 @@ async function migrate(db: SQLite.SQLiteDatabase) {
       GROUP BY author_key;
     `);
     version = 13;
+  }
+
+  // v14: strip publication boilerplate that some community feeds put in the
+  // byline field ("Published by … View all posts", staff labels, hostnames).
+  // Rebuilding the compact exposure rows prevents those labels from keeping
+  // their old recommendation penalty or mute identity after the cleanup.
+  if (version < 14) {
+    const articles = await db.getAllAsync<{
+      id: number;
+      author: string;
+      author_key: string;
+    }>("SELECT id, author, author_key FROM articles WHERE author != ''");
+    const muted = await db.getAllAsync<MutedAuthorRow>(
+      "SELECT author_key, display_name, muted_at FROM muted_authors"
+    );
+
+    await db.withTransactionAsync(async () => {
+      for (const article of articles) {
+        const author = cleanAuthorName(article.author);
+        const authorKey = normalizeAuthorKey(author);
+        if (author !== article.author || authorKey !== article.author_key) {
+          await db.runAsync(
+            "UPDATE articles SET author = ?, author_key = ? WHERE id = ?",
+            [author, authorKey, article.id]
+          );
+        }
+      }
+
+      for (const row of muted) {
+        const displayName = cleanAuthorName(row.display_name);
+        const authorKey = normalizeAuthorKey(displayName);
+        if (!authorKey) {
+          await db.runAsync(
+            "DELETE FROM muted_authors WHERE author_key = ?",
+            [row.author_key]
+          );
+        } else if (
+          authorKey !== row.author_key ||
+          displayName !== row.display_name
+        ) {
+          await db.runAsync(
+            `INSERT INTO muted_authors (author_key, display_name, muted_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(author_key) DO UPDATE SET
+               display_name = excluded.display_name,
+               muted_at = MAX(muted_authors.muted_at, excluded.muted_at)`,
+            [authorKey, displayName, row.muted_at]
+          );
+          if (authorKey !== row.author_key) {
+            await db.runAsync(
+              "DELETE FROM muted_authors WHERE author_key = ?",
+              [row.author_key]
+            );
+          }
+        }
+      }
+    });
+
+    await db.execAsync(`
+      DELETE FROM identity_exposures WHERE identity_kind = 'author';
+      INSERT INTO identity_exposures
+        (identity_kind, identity_key, exposure_count, last_exposed_at)
+      SELECT 'author', author_key, COUNT(*), MAX(read_at)
+      FROM articles
+      WHERE is_read = 1 AND read_at IS NOT NULL AND author_key != ''
+      GROUP BY author_key;
+    `);
+    version = 14;
   }
 
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);

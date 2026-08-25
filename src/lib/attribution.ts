@@ -12,9 +12,16 @@ const NON_AUTHOR_LABEL = /^(?:posted on|published by|written by|admin|administra
 const AGGREGATOR_SUBMITTER = /^[^\s]+\.[a-z]{2,}\s+(?:via|by)\s+\S+$/i;
 const TRAILING_NEWS_DATE = /\s+(?:·\s*)?(?:posted|published|updated|last updated)\b.*$/i;
 const TRAILING_CALENDAR_DATE = /\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}.*$/i;
+const HOSTNAME_BYLINE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/.*)?$/i;
 
 export function cleanAuthorName(value: string): string {
   let author = compactWhitespace(value).replace(/^by\s+/i, "");
+  const featuredBy = author.match(/^featuring\b.*?\.\s*by\s+(.+?)(?:\s+on)?$/i);
+  if (featuredBy) author = featuredBy[1];
+  const publishedBy = author.match(
+    /^published by\s+(.+?)\s+view all posts by\b/i
+  );
+  if (publishedBy) author = publishedBy[1];
   const transportedName = author.match(/^\S+@\S+\s+\(([^)]+)\)$/i);
   if (transportedName) author = transportedName[1];
   else author = author.replace(/^\S+@\S+\s+/, "");
@@ -31,6 +38,8 @@ export function cleanAuthorName(value: string): string {
   author = compactWhitespace(author);
   if (AGGREGATOR_SUBMITTER.test(author)) return "";
   if (NON_AUTHOR_LABEL.test(author)) return "";
+  if (/\bstaff$/i.test(author) || /(?:'s|s)?\s*blog$/i.test(author)) return "";
+  if (HOSTNAME_BYLINE.test(author)) return "";
   return author;
 }
 

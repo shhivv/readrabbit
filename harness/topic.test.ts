@@ -30,6 +30,32 @@ describe("article topic relevance", () => {
     expect(result.relevance).toBeGreaterThan(MIN_TOPIC_RELEVANCE);
   });
 
+  test("recognizes finance and public-policy economics without a generic label", () => {
+    const finance = assessTopic(
+      {
+        title: "How equity derivatives change asset pricing",
+        excerpt: "Options markets, portfolio risk, and financial regulation.",
+        textContent:
+          "Investors use futures and credit to value equity while banks manage market risk.",
+      },
+      "economics"
+    );
+    const policy = assessTopic(
+      {
+        title: "The fiscal arithmetic of Social Security reform",
+        excerpt: "Retirement benefits, public pensions, and the federal deficit.",
+        textContent:
+          "Tax policy changes worker incentives, government spending, debt, and household wealth.",
+      },
+      "economics"
+    );
+
+    expect(finance.topic).toBe("economics");
+    expect(finance.relevance).toBeGreaterThan(MIN_TOPIC_RELEVANCE);
+    expect(policy.topic).toBe("economics");
+    expect(policy.relevance).toBeGreaterThan(MIN_TOPIC_RELEVANCE);
+  });
+
   test("recognizes mathematical writing from its content", () => {
     const result = assessTopic(
       {

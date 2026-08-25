@@ -50,6 +50,11 @@ const LEXICONS: Record<Topic, Lexicon> = {
       "market power", "economic policy",
       "political economy", "marginal utility", "balance of payments",
       "debt to gdp", "stock market", "economic education", "economic history",
+      "financial market", "financial regulation", "equity market",
+      "equity derivative", "asset pricing", "banking system",
+      "social security", "public pension", "government spending",
+      "tax policy", "energy market", "power market", "commodity market",
+      "corporate finance", "sovereign debt", "financial stability",
     ],
     supporting: [
       "economy", "economic", "economist", "inflation", "deflation",
@@ -59,6 +64,10 @@ const LEXICONS: Record<Topic, Lexicon> = {
       "regulation", "currency", "gdp", "bond", "yield", "incentive",
       "econometric", "macroeconomic", "microeconomic",
       "stagnation", "auction", "bankruptcy", "birth rate", "migration",
+      "banking", "credit", "loan", "mortgage", "equity", "derivative",
+      "portfolio", "valuation", "pension", "retirement", "subsidy",
+      "deficit", "debt", "wealth", "rent", "employment", "worker",
+      "business cycle", "financial", "futures", "commodity",
     ],
   },
   math: {

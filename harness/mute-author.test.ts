@@ -129,6 +129,34 @@ describe("article attribution", () => {
         site_name: "Thiago's notes",
       }).primary
     ).toBe("Thiago Perrotta");
+    expect(
+      getArticleAttribution({
+        author: "Published by Boaz Barak View all posts by Boaz Barak",
+        site_name: "Windows on Theory",
+      }).primary
+    ).toBe("Boaz Barak");
+    expect(
+      getArticleAttribution({
+        author: "Featuring Mark L. Egan. By Rachel Layne on",
+        site_name: "EconoFact",
+      }).primary
+    ).toBe("Rachel Layne");
+    expect(
+      getArticleAttribution({
+        author: "Al Jazeera Staff",
+        site_name: "Al Jazeera",
+      })
+    ).toEqual({ primary: "Al Jazeera", secondary: "", hasAuthor: false });
+    expect(
+      getArticleAttribution({
+        author: "pyfound.blogspot.com",
+        site_name: "Python Software Foundation",
+      })
+    ).toEqual({
+      primary: "Python Software Foundation",
+      secondary: "",
+      hasAuthor: false,
+    });
   });
 });
 

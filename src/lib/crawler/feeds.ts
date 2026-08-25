@@ -1,5 +1,6 @@
 import { XMLParser } from "fast-xml-parser";
 import { fetchText } from "./fetcher";
+import { rootDomain } from "./classify";
 
 export interface FeedEntry {
   url: string;
@@ -13,6 +14,56 @@ export interface ParsedFeed {
   title: string;
   siteUrl: string | null;
   entries: FeedEntry[];
+}
+
+function entryDomain(entry: FeedEntry): string {
+  try {
+    return rootDomain(new URL(entry.url).hostname.toLowerCase());
+  } catch {
+    return entry.url;
+  }
+}
+
+/**
+ * Stable publisher round-robin for community feeds. Their chronological head
+ * often contains many posts from the same prolific site; taking a plain slice
+ * spends the local ingest budget before diversity ranking ever sees the long
+ * tail. The first pass takes one per destination, then a second pass, and so
+ * on until the bounded limit is full.
+ */
+export function selectFeedEntriesByDomain(
+  entries: readonly FeedEntry[],
+  limit: number,
+  perDomainLimit = Number.POSITIVE_INFINITY
+): FeedEntry[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0) return [];
+
+  const queues = new Map<string, FeedEntry[]>();
+  for (const entry of entries) {
+    const domain = entryDomain(entry);
+    const queue = queues.get(domain) ?? [];
+    queue.push(entry);
+    queues.set(domain, queue);
+  }
+
+  const selected: FeedEntry[] = [];
+  for (
+    let round = 0;
+    selected.length < boundedLimit && round < perDomainLimit;
+    round++
+  ) {
+    let added = false;
+    for (const queue of queues.values()) {
+      const entry = queue[round];
+      if (!entry) continue;
+      selected.push(entry);
+      added = true;
+      if (selected.length === boundedLimit) break;
+    }
+    if (!added) break;
+  }
+  return selected;
 }
 
 const parser = new XMLParser({

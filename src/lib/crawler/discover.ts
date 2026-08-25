@@ -7,6 +7,7 @@ import {
   discoverFeedUrl,
   parseFeed,
   parseSyndicationDocument,
+  selectFeedEntriesByDomain,
   type FeedEntry,
 } from "./feeds";
 import { fetchText, HostScheduler } from "./fetcher";
@@ -533,7 +534,7 @@ export async function communityDiscover(
     if (!result) continue;
     const before = Object.keys(poolCache ?? {}).length;
     enqueueCandidates(
-      result.parsed.entries.map((entry) => ({
+      selectFeedEntriesByDomain(result.parsed.entries, 30, 1).map((entry) => ({
         url: entry.url,
         topicHint: result.channel.topic,
       })),

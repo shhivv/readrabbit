@@ -6,7 +6,7 @@ describe("starting source catalog", () => {
     const feedUrls = catalog.map((source) => source.feedUrl);
     expect(new Set(feedUrls).size).toBe(feedUrls.length);
 
-    const minimums = { technology: 35, economics: 15, math: 15 };
+    const minimums = { technology: 35, economics: 25, math: 22 };
     for (const [topic, minimum] of Object.entries(minimums)) {
       const sources = catalog.filter((source) => source.topic === topic);
       expect(sources.length).toBeGreaterThanOrEqual(minimum);

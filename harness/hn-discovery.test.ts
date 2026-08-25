@@ -27,6 +27,7 @@ const {
   maxEntriesForSourceOrigin,
   requiresVerifiedPublicationDate,
   selectEnrichmentCandidates,
+  selectEntriesForSourceOrigin,
   siteNameForFeedEntry,
 } = await import("../src/lib/crawler/engine");
 
@@ -250,6 +251,34 @@ describe("bounded community breadth", () => {
     expect(maxEntriesForSourceOrigin("seed")).toBe(12);
     expect(maxEntriesForSourceOrigin("outbound")).toBe(12);
     expect(maxEntriesForSourceOrigin("aggregator")).toBe(24);
+  });
+
+  test("spends aggregator slots across publishers before taking seconds", () => {
+    const entry = (url: string) => ({
+      url,
+      title: url,
+      author: "",
+      publishedAt: null,
+      summaryHtml: "",
+    });
+    const selected = selectEntriesForSourceOrigin(
+      [
+        entry("https://prolific.example/one"),
+        entry("https://prolific.example/two"),
+        entry("https://prolific.example/three"),
+        entry("https://second.example/one"),
+        entry("https://third.example/one"),
+      ],
+      "aggregator"
+    );
+
+    expect(selected.map((row) => row.url)).toEqual([
+      "https://prolific.example/one",
+      "https://second.example/one",
+      "https://third.example/one",
+      "https://prolific.example/two",
+      "https://prolific.example/three",
+    ]);
   });
 
   test("uses the destination publisher identity for aggregator entries", () => {
