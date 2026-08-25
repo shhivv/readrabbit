@@ -94,17 +94,22 @@ async function main() {
   const rssTimer = setInterval(rssNow, 250);
   let lastGcTick = 0;
   const { runCrawl } = await import("../src/lib/crawler/engine");
-  const { loadDeque } = await import("../src/lib/deque");
+  const { loadDeque, loadDiverseOpeningDeque } = await import("../src/lib/deque");
 
-  // time-to-first-card: poll the real deque while the crawl runs
+  // Time to a first screen worth shipping: the app deliberately waits past
+  // the first article from the first feed until identities and topics are
+  // genuinely varied.
   const crawlStart = Date.now();
-  let firstCardMs: number | null = null;
+  let firstDiverseOpeningMs: number | null = null;
+  let firstOpeningIds: number[] = [];
   (async () => {
     for (;;) {
       await new Promise((r) => setTimeout(r, 500));
       try {
-        if ((await loadDeque()).length > 0) {
-          firstCardMs = Date.now() - crawlStart;
+        const ids = await loadDiverseOpeningDeque();
+        if (ids.length > 0) {
+          firstDiverseOpeningMs = Date.now() - crawlStart;
+          firstOpeningIds = ids;
           return;
         }
       } catch {}
@@ -139,9 +144,9 @@ async function main() {
   });
   clearInterval(rssTimer);
   console.log(
-    firstCardMs != null
-      ? `\n✓ first readable card after ${(firstCardMs / 1000).toFixed(1)}s`
-      : "\n✗ no card became readable during the crawl"
+    firstDiverseOpeningMs != null
+      ? `\n✓ first diverse opening after ${(firstDiverseOpeningMs / 1000).toFixed(1)}s`
+      : "\n✗ no diverse opening became ready during the crawl"
   );
   if (lastPhase && phases[lastPhase]?.end == null) {
     phases[lastPhase].end = Date.now();
@@ -199,6 +204,22 @@ async function main() {
   console.log(
     `  deque ready         : ${ids.length} ids in ${Date.now() - dequeT0}ms`
   );
+  if (firstOpeningIds.length > 0) {
+    const openingPlaceholders = firstOpeningIds.slice(0, 12).map(() => "?").join(", ");
+    const [opening] = await db.getAllAsync<{
+      voices: number;
+      domains: number;
+    }>(
+      `SELECT COUNT(DISTINCT COALESCE(NULLIF(author_key, ''),
+                                      'site:' || site_domain)) AS voices,
+              COUNT(DISTINCT site_domain) AS domains
+       FROM articles WHERE id IN (${openingPlaceholders})`,
+      firstOpeningIds.slice(0, 12)
+    );
+    console.log(
+      `  first opening      : ${opening?.voices ?? 0} voices · ${opening?.domains ?? 0} domains`
+    );
+  }
 
   const samples = await db.getAllAsync(
     `SELECT title, site_name, word_count, quality FROM articles

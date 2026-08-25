@@ -4,6 +4,8 @@ import { MIN_TOPIC_RELEVANCE } from "./crawler/topic";
 import {
   buildDiverseSlate,
   coolByPersistentExposure,
+  hasDiverseOpening,
+  type RecommendationCandidate,
   type PersistentExposureCandidate,
 } from "./recommend";
 
@@ -22,6 +24,10 @@ const WINDOW_SIZE = 36;
 // is wide enough for the long tail without letting a prolific publication's
 // hundreds of posts crowd those writers out before diversity rules run.
 const CANDIDATE_POOL_SIZE = WINDOW_SIZE * 10;
+// One or two cards of memory only prevent adjacency. A full reading-session
+// tail prevents generation N+1 from rediscovering the same prolific people
+// that generation N already used, while remaining a tiny SQLite lookup.
+const DIVERSITY_CONTEXT_SIZE = 60;
 export const LOW_WATER = 12;
 
 // Freshness contract: the reader is a "what's new worth reading" surface.
@@ -110,10 +116,31 @@ export async function loadDeque(): Promise<number[]> {
   return loadDequeWindow(selectedTopics);
 }
 
+// First-run readiness is intentionally stricter than ordinary refills. Do not
+// build a reader from the first prolific feed to answer: wait until the actual
+// opening has a full screen of people/publications and a balanced topic batch.
+export async function loadDiverseOpeningDeque(): Promise<number[]> {
+  const selectedTopics = await getSelectedTopics();
+  if (selectedTopics.length === 0) return [];
+  const slate = await buildDequeWindow(selectedTopics);
+  return hasDiverseOpening(slate, selectedTopics)
+    ? slate.map((row) => row.id)
+    : [];
+}
+
 async function loadDequeWindow(
   selectedTopics: Topic[],
   excludedIds: readonly number[] = []
 ): Promise<number[]> {
+  return (await buildDequeWindow(selectedTopics, excludedIds)).map(
+    (row) => row.id
+  );
+}
+
+async function buildDequeWindow(
+  selectedTopics: Topic[],
+  excludedIds: readonly number[] = []
+): Promise<CandidateRow[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<CandidateRow>(
     weightedCandidateQuery(selectedTopics.length),
@@ -142,9 +169,48 @@ async function loadDequeWindow(
   const exposureAdjusted = coolByPersistentExposure([
     ...rowsById.values(),
   ]).filter((row) => !excluded.has(row.id));
-  return buildDiverseSlate(exposureAdjusted, WINDOW_SIZE, selectedTopics).map(
-    (row) => row.id
+  const priorCandidates = await loadDiversityContext(db, excludedIds);
+  return buildDiverseSlate(
+    exposureAdjusted,
+    WINDOW_SIZE,
+    selectedTopics,
+    priorCandidates
   );
+}
+
+async function loadDiversityContext(
+  db: Awaited<ReturnType<typeof getDb>>,
+  queuedIds: readonly number[]
+): Promise<RecommendationCandidate[]> {
+  const domain =
+    `COALESCE(NULLIF(site_domain, ''), ` +
+    `CASE WHEN source_id IS NOT NULL THEN 'source:' || source_id ` +
+    `ELSE 'article:' || id END)`;
+  const contextIds = queuedIds.slice(-DIVERSITY_CONTEXT_SIZE);
+
+  if (contextIds.length > 0) {
+    const rows = await db.getAllAsync<RecommendationCandidate>(
+      `SELECT id, topic, author_key AS authorKey, ${domain} AS domain
+       FROM articles
+       WHERE id IN (${contextIds.map(() => "?").join(", ")})`,
+      contextIds
+    );
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return contextIds
+      .map((id) => byId.get(id))
+      .filter((row): row is RecommendationCandidate => row != null);
+  }
+
+  const recent = await db.getAllAsync<RecommendationCandidate>(
+    `SELECT id, topic, author_key AS authorKey, ${domain} AS domain
+     FROM articles
+     WHERE is_read = 1 AND read_at IS NOT NULL
+       AND topic IN ('technology', 'economics', 'math')
+     ORDER BY read_at DESC
+     LIMIT ?`,
+    [DIVERSITY_CONTEXT_SIZE]
+  );
+  return recent.reverse();
 }
 
 export async function countEligible(): Promise<number> {

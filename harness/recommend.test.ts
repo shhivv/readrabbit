@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildDiverseSlate,
   coolByPersistentExposure,
+  hasDiverseOpening,
   persistentExposureCost,
   type PersistentExposureCandidate,
 } from "../src/lib/recommend";
@@ -109,18 +110,19 @@ describe("recommendation slate diversity", () => {
     const slate = buildDiverseSlate(rows, 8, ["economics", "math"]);
     expect(slate.filter((row) => row.topic === "economics")).toHaveLength(4);
     expect(slate.filter((row) => row.topic === "math")).toHaveLength(4);
-    // The input quality order groups the topics, and that natural ordering is
-    // preserved. Only the completed batch composition is constrained.
-    expect(slate.map((row) => row.topic)).toEqual([
+    // Quality may create a short run, but the stream never drifts far enough
+    // to feel like one selected topic disappeared.
+    expect(slate.slice(0, 2).map((row) => row.topic)).toEqual([
       "economics",
       "economics",
-      "economics",
-      "economics",
-      "math",
-      "math",
-      "math",
-      "math",
     ]);
+    for (let end = 1; end <= slate.length; end++) {
+      const economics = slate
+        .slice(0, end)
+        .filter((row) => row.topic === "economics").length;
+      const math = end - economics;
+      expect(Math.abs(economics - math)).toBeLessThanOrEqual(2);
+    }
   });
 
   test("splits a three-topic generation equally", () => {
@@ -156,7 +158,7 @@ describe("recommendation slate diversity", () => {
     expect(slate.filter((row) => row.topic === "math")).toHaveLength(4);
   });
 
-  test("keeps the topic split exact before relaxing identity diversity", () => {
+  test("keeps the topic split exact while reserving a flexible domain", () => {
     const rows = [
       candidate(1, "shared.example", "tech-writer", "technology"),
       candidate(2, "unique.example", "other-tech-writer", "technology"),
@@ -164,7 +166,7 @@ describe("recommendation slate diversity", () => {
     ];
     const slate = buildDiverseSlate(rows, 2, ["technology", "economics"]);
 
-    expect(slate.map((row) => row.id)).toEqual([1, 3]);
+    expect(slate.map((row) => row.id)).toEqual([2, 3]);
   });
 
   test("reserves a cross-topic voice for the topic with less exclusive supply", () => {
@@ -196,6 +198,123 @@ describe("recommendation slate diversity", () => {
     expect(slate).toHaveLength(6);
     expect(slate.filter((row) => row.topic === "technology")).toHaveLength(5);
     expect(slate.filter((row) => row.topic === "economics")).toHaveLength(1);
+  });
+
+  test("does not reset author or publication spacing at a batch boundary", () => {
+    const prior = [
+      candidate(900, "recent-one.example", "recent-one"),
+      candidate(901, "recent-two.example", "recent-two"),
+    ];
+    const rows = [
+      candidate(1, "recent-two.example", "different-person"),
+      candidate(2, "different.example", "recent-one"),
+      ...Array.from({ length: 4 }, (_, index) =>
+        candidate(
+          100 + index,
+          `fresh-${index}.example`,
+          `fresh-${index}`
+        )
+      ),
+    ];
+
+    const slate = buildDiverseSlate(rows, 4, ["economics"], prior);
+    expect(slate.map((row) => row.id)).toEqual([100, 101, 102, 103]);
+  });
+
+  test("waits for a varied, topic-balanced first-run opening", () => {
+    const balanced = [
+      ...Array.from({ length: 6 }, (_, index) =>
+        candidate(
+          index + 1,
+          `tech-${index}.example`,
+          `tech-${index}`,
+          "technology"
+        )
+      ),
+      ...Array.from({ length: 6 }, (_, index) =>
+        candidate(
+          100 + index,
+          `econ-${index}.example`,
+          `econ-${index}`,
+          "economics"
+        )
+      ),
+    ];
+
+    expect(
+      hasDiverseOpening(balanced, ["technology", "economics"])
+    ).toBe(true);
+    expect(
+      hasDiverseOpening(
+        balanced.map((row, index) =>
+          index === 11
+            ? { ...row, domain: balanced[0].domain }
+            : row
+        ),
+        ["technology", "economics"]
+      )
+    ).toBe(false);
+    expect(
+      hasDiverseOpening(
+        balanced.map((row, index) => ({
+          ...row,
+          topic: index < 8 ? "technology" : "economics",
+        })),
+        ["technology", "economics"]
+      )
+    ).toBe(false);
+  });
+
+  test("keeps topic shares close without forcing strict alternation", () => {
+    const rows = [
+      ...Array.from({ length: 12 }, (_, index) =>
+        candidate(
+          index + 1,
+          `tech-${index}.example`,
+          `tech-${index}`,
+          "technology"
+        )
+      ),
+      ...Array.from({ length: 12 }, (_, index) =>
+        candidate(
+          100 + index,
+          `econ-${index}.example`,
+          `econ-${index}`,
+          "economics"
+        )
+      ),
+      ...Array.from({ length: 12 }, (_, index) =>
+        candidate(
+          200 + index,
+          `math-${index}.example`,
+          `math-${index}`,
+          "math"
+        )
+      ),
+    ];
+
+    const slate = buildDiverseSlate(rows, 18, [
+      "technology",
+      "economics",
+      "math",
+    ]);
+    expect(slate.slice(0, 2).map((row) => row.topic)).toEqual([
+      "technology",
+      "technology",
+    ]);
+    expect(
+      slate.reduce<Record<string, number>>((counts, row) => {
+        counts[row.topic] = (counts[row.topic] ?? 0) + 1;
+        return counts;
+      }, {})
+    ).toEqual({ technology: 6, economics: 6, math: 6 });
+
+    for (let end = 1; end <= slate.length; end++) {
+      const counts = ["technology", "economics", "math"].map(
+        (topic) => slate.slice(0, end).filter((row) => row.topic === topic).length
+      );
+      expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(2);
+    }
   });
 
   test("still fills a slate when the eligible pool is small", () => {
