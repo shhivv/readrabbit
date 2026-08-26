@@ -11,7 +11,8 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const sourcePath = new URL("./.data/naturallycurious.db", import.meta.url).pathname;
+const sourcePath = new URL("./.data/naturallycurious.db", import.meta.url)
+  .pathname;
 if (!existsSync(sourcePath)) throw new Error("Run bun harness/crawl.ts first");
 
 // Flush the harness WAL before taking a disposable snapshot.
@@ -53,28 +54,36 @@ function canSupplyAtCap(availability, topicCounts, cap) {
   };
 
   identities.forEach((identity, index) =>
-    addEdge(source, identityOffset + index, cap)
+    addEdge(source, identityOffset + index, cap),
   );
   for (const row of availability) {
     addEdge(
       identityOffset + identities.indexOf(row.identity),
       topicOffset + topics.indexOf(row.topic),
-      row.articles
+      row.articles,
     );
   }
   topics.forEach((topic, index) =>
-    addEdge(topicOffset + index, sink, topicCounts.get(topic) ?? 0)
+    addEdge(topicOffset + index, sink, topicCounts.get(topic) ?? 0),
   );
 
   let flow = 0;
   for (;;) {
     const parent = Array(sink + 1).fill(null);
     const queue = [source];
-    for (let cursor = 0; cursor < queue.length && parent[sink] == null; cursor++) {
+    for (
+      let cursor = 0;
+      cursor < queue.length && parent[sink] == null;
+      cursor++
+    ) {
       const node = queue[cursor];
       for (let edgeIndex = 0; edgeIndex < graph[node].length; edgeIndex++) {
         const edge = graph[node][edgeIndex];
-        if (edge.capacity <= 0 || edge.to === source || parent[edge.to] != null) {
+        if (
+          edge.capacity <= 0 ||
+          edge.to === source ||
+          parent[edge.to] != null
+        ) {
           continue;
         }
         parent[edge.to] = [node, edgeIndex];
@@ -84,12 +93,12 @@ function canSupplyAtCap(availability, topicCounts, cap) {
     if (parent[sink] == null) break;
 
     let amount = Number.POSITIVE_INFINITY;
-    for (let node = sink; node !== source; ) {
+    for (let node = sink; node !== source;) {
       const [previous, edgeIndex] = parent[node];
       amount = Math.min(amount, graph[previous][edgeIndex].capacity);
       node = previous;
     }
-    for (let node = sink; node !== source; ) {
+    for (let node = sink; node !== source;) {
       const [previous, edgeIndex] = parent[node];
       const edge = graph[previous][edgeIndex];
       edge.capacity -= amount;
@@ -99,7 +108,69 @@ function canSupplyAtCap(availability, topicCounts, cap) {
     flow += amount;
   }
 
-  return flow === [...topicCounts.values()].reduce((sum, count) => sum + count, 0);
+  return (
+    flow === [...topicCounts.values()].reduce((sum, count) => sum + count, 0)
+  );
+}
+
+function canSupplyVoiceDomainAtCaps(availability, demand, voiceCap, domainCap) {
+  const voices = [...new Set(availability.map((row) => row.voice))];
+  const domains = [...new Set(availability.map((row) => row.domain))];
+  const source = 0;
+  const voiceOffset = 1;
+  const domainOffset = voiceOffset + voices.length;
+  const sink = domainOffset + domains.length;
+  const graph = Array.from({ length: sink + 1 }, () => []);
+  const addEdge = (from, to, capacity) => {
+    graph[from].push({ to, capacity, reverse: graph[to].length });
+    graph[to].push({ to: from, capacity: 0, reverse: graph[from].length - 1 });
+  };
+
+  voices.forEach((_, index) => addEdge(source, voiceOffset + index, voiceCap));
+  domains.forEach((_, index) => addEdge(domainOffset + index, sink, domainCap));
+  for (const row of availability) {
+    addEdge(
+      voiceOffset + voices.indexOf(row.voice),
+      domainOffset + domains.indexOf(row.domain),
+      row.articles,
+    );
+  }
+
+  let flow = 0;
+  for (;;) {
+    const parent = Array(sink + 1).fill(null);
+    const queue = [source];
+    for (
+      let cursor = 0;
+      cursor < queue.length && parent[sink] == null;
+      cursor++
+    ) {
+      const node = queue[cursor];
+      for (let edgeIndex = 0; edgeIndex < graph[node].length; edgeIndex++) {
+        const edge = graph[node][edgeIndex];
+        if (
+          edge.capacity <= 0 ||
+          edge.to === source ||
+          parent[edge.to] != null
+        ) {
+          continue;
+        }
+        parent[edge.to] = [node, edgeIndex];
+        queue.push(edge.to);
+      }
+    }
+    if (parent[sink] == null) break;
+
+    for (let node = sink; node !== source;) {
+      const [previous, edgeIndex] = parent[node];
+      const edge = graph[previous][edgeIndex];
+      edge.capacity--;
+      graph[node][edge.reverse].capacity++;
+      node = previous;
+    }
+    flow++;
+  }
+  return flow >= demand;
 }
 
 try {
@@ -133,7 +204,7 @@ try {
        WHERE is_archived = 0 AND word_count >= 250
          AND topic_relevance >= 0.4
          AND topic IN (${placeholders})`,
-      topics
+      topics,
     );
     const voiceAvailability = await db.getAllAsync(
       `SELECT topic,
@@ -146,7 +217,7 @@ try {
          AND topic IN (${placeholders})
        GROUP BY topic, COALESCE(NULLIF(author_key, ''),
                          'site:' || COALESCE(NULLIF(site_domain, ''), id))`,
-      topics
+      topics,
     );
     const domainAvailability = await db.getAllAsync(
       `SELECT topic,
@@ -157,7 +228,20 @@ try {
          AND topic_relevance >= 0.4
          AND topic IN (${placeholders})
        GROUP BY topic, COALESCE(NULLIF(site_domain, ''), 'article:' || id)`,
-      topics
+      topics,
+    );
+    const voiceDomainAvailability = await db.getAllAsync(
+      `SELECT topic,
+              COALESCE(NULLIF(author_key, ''),
+                       'site:' || COALESCE(NULLIF(site_domain, ''), id)) AS voice,
+              COALESCE(NULLIF(site_domain, ''), 'article:' || id) AS domain,
+              COUNT(*) AS articles
+       FROM articles
+       WHERE is_archived = 0 AND word_count >= 250
+         AND topic_relevance >= 0.4
+         AND topic IN (${placeholders})
+       GROUP BY topic, voice, domain`,
+      topics,
     );
     const journeyLength = Math.min(60, pool.articles);
     const sequence = [];
@@ -171,7 +255,7 @@ try {
         `SELECT id, title, author, author_key, site_name, topic,
                 COALESCE(NULLIF(site_domain, ''), 'article:' || id) AS domain
          FROM articles WHERE id = ?`,
-        [id]
+        [id],
       );
       if (!row) fail(`missing selected article ${id}`);
       sequence.push({
@@ -180,10 +264,7 @@ try {
       });
       await markRead(id);
 
-      if (
-        deque.length - index <= LOW_WATER &&
-        deque.length < journeyLength
-      ) {
+      if (deque.length - index <= LOW_WATER && deque.length < journeyLength) {
         const previousLength = deque.length;
         deque = (await topUpDeque(deque)).ids;
         if (deque.length > previousLength) topUpBoundaries.push(previousLength);
@@ -199,7 +280,8 @@ try {
     for (let index = 0; index < sequence.length; index++) {
       const row = sequence[index];
       const seenVoice = voiceCounts.get(row.voice) ?? 0;
-      if (seenVoice > 0 && firstVoiceRepeat == null) firstVoiceRepeat = index + 1;
+      if (seenVoice > 0 && firstVoiceRepeat == null)
+        firstVoiceRepeat = index + 1;
       voiceCounts.set(row.voice, seenVoice + 1);
       domainCounts.set(row.domain, (domainCounts.get(row.domain) ?? 0) + 1);
       // The generated reader window is 36 cards. Beyond that point a tiny
@@ -208,7 +290,7 @@ try {
       if (index < 36 && lastDomainPosition.has(row.domain)) {
         minimumDomainGap = Math.min(
           minimumDomainGap,
-          index - lastDomainPosition.get(row.domain)
+          index - lastDomainPosition.get(row.domain),
         );
       }
       if (index < 36) lastDomainPosition.set(row.domain, index);
@@ -230,39 +312,62 @@ try {
     // mixed-topic slate, using 60 unique people can require one publication
     // to carry two of them even when a publication-only assignment could hit
     // 60/60. Two well-spaced cards is not publication domination.
-    const allowedDomainCap = Math.max(
-      fairDomainCap,
-      topics.length > 1 ? 2 : 1
-    );
+    const allowedDomainCap = Math.max(fairDomainCap, topics.length > 1 ? 2 : 1);
+    let allowedVoiceCap = fairVoiceCap;
+    if (topics.length === 1) {
+      while (
+        !canSupplyVoiceDomainAtCaps(
+          voiceDomainAvailability,
+          journeyLength,
+          allowedVoiceCap,
+          allowedDomainCap,
+        )
+      ) {
+        allowedVoiceCap++;
+      }
+    }
     // A 24-card no-repeat runway is two full visible openings. Requiring the
     // whole finite fixture to be exhausted can conflict with the simultaneous
     // no-adjacent-publication rule when one site carries many distinct people.
-    const expectedFirstRepeat =
-      Math.min(journeyLength, pool.voices, 24) + 1;
+    const expectedFirstRepeat = Math.min(journeyLength, pool.voices, 24) + 1;
     const label = topics.join(" + ");
 
     console.log(`\n${label}`);
     console.log(
-      `  ${journeyLength} cards · ${uniqueVoices} voices · ${uniqueDomains} domains`
+      `  ${journeyLength} cards · ${uniqueVoices} voices · ${uniqueDomains} domains`,
     );
     console.log(
-      `  first repeated voice ${firstVoiceRepeat ?? "none"} · max voice ${maxVoiceCount}/${fairVoiceCap} fair · max domain ${maxDomainCount}/${allowedDomainCap} allowed`
+      `  first repeated voice ${firstVoiceRepeat ?? "none"} · max voice ${maxVoiceCount}/${allowedVoiceCap} allowed · max domain ${maxDomainCount}/${allowedDomainCap} allowed`,
     );
     console.log(
       `  topics: ${[...topicCounts.entries()]
         .map(([topic, count]) => `${topic} ${count}`)
-        .join(" · ")}`
+        .join(" · ")}`,
     );
     console.log(
-      `  opening voices: ${sequence.slice(0, 12).map((row) => row.author || row.site_name).join(" · ")}`
+      `  opening voices: ${sequence
+        .slice(0, 12)
+        .map((row) => row.author || row.site_name)
+        .join(" · ")}`,
     );
     console.log(
       `  most exposed: ${[...voiceCounts.entries()]
         .sort((left, right) => right[1] - left[1])
         .slice(0, 5)
         .map(([voice, count]) => `${voice}(${count})`)
-        .join(" · ")}`
+        .join(" · ")}`,
     );
+    if (maxVoiceCount > allowedVoiceCap) {
+      const offenders = [...voiceCounts.entries()]
+        .filter(([, count]) => count === maxVoiceCount)
+        .map(([voice]) => {
+          const positions = sequence
+            .map((row, index) => (row.voice === voice ? index + 1 : null))
+            .filter((position) => position != null);
+          return `${voice}@${positions.join(",")}`;
+        });
+      console.log(`  voice cap offenders: ${offenders.join(" · ")}`);
+    }
     const repeatedDomains = [...domainCounts.entries()]
       .filter(([, count]) => count > 1)
       .sort((left, right) => right[1] - left[1]);
@@ -271,7 +376,7 @@ try {
         `  repeated publications: ${repeatedDomains
           .slice(0, 5)
           .map(([domain, count]) => `${domain}(${count})`)
-          .join(" · ")}`
+          .join(" · ")}`,
       );
     }
 
@@ -281,21 +386,23 @@ try {
       firstVoiceRepeat < expectedFirstRepeat
     ) {
       fail(
-        `${label} repeated a person at ${firstVoiceRepeat} before the ${expectedFirstRepeat - 1}-voice runway`
+        `${label} repeated a person at ${firstVoiceRepeat} before the ${expectedFirstRepeat - 1}-voice runway`,
       );
     }
-    if (maxVoiceCount > fairVoiceCap) {
+    if (maxVoiceCount > allowedVoiceCap) {
       fail(
-        `${label} exposed one voice ${maxVoiceCount} times; fair cap is ${fairVoiceCap}`
+        `${label} exposed one voice ${maxVoiceCount} times; jointly feasible cap is ${allowedVoiceCap}`,
       );
     }
     if (maxDomainCount > allowedDomainCap) {
       fail(
-        `${label} exposed one publication ${maxDomainCount} times; allowed cap is ${allowedDomainCap}`
+        `${label} exposed one publication ${maxDomainCount} times; allowed cap is ${allowedDomainCap}`,
       );
     }
     if (uniqueDomains >= 2 && minimumDomainGap < 2) {
-      fail(`${label} repeated a publication only ${minimumDomainGap} cards later`);
+      fail(
+        `${label} repeated a publication only ${minimumDomainGap} cards later`,
+      );
     }
     if (
       topics.length > 1 &&

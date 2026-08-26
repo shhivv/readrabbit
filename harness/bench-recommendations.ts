@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
-const sourcePath = new URL("./.data/naturallycurious.db", import.meta.url).pathname;
+const sourcePath = new URL("./.data/naturallycurious.db", import.meta.url)
+  .pathname;
 if (!existsSync(sourcePath)) {
   throw new Error("Run bun harness/crawl.ts before this benchmark");
 }
@@ -40,7 +41,9 @@ Bun.plugin({
 
 function percentile(values, fraction) {
   const sorted = values.slice().sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+  return sorted[
+    Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))
+  ];
 }
 
 function legacyDequeQuery() {
@@ -77,13 +80,13 @@ try {
   const migrationMs = performance.now() - migrationStart;
   await dbModule.kvSet(
     "topics",
-    JSON.stringify(["technology", "economics", "math"])
+    JSON.stringify(["technology", "economics", "math"]),
   );
 
   const { assessTopic } = await import("../src/lib/crawler/topic");
   const articles = await db.getAllAsync(
     `SELECT title, excerpt, text_content, topic FROM articles
-     WHERE word_count >= 250`
+     WHERE word_count >= 250`,
   );
   const scoringStart = performance.now();
   for (let pass = 0; pass < 100; pass++) {
@@ -92,7 +95,7 @@ try {
         article,
         article.topic === "economics" || article.topic === "math"
           ? article.topic
-          : "technology"
+          : "technology",
       );
     }
   }
@@ -100,31 +103,50 @@ try {
   const scorePerArticleMs = scoringMs / Math.max(1, articles.length * 100);
 
   const { loadDeque } = await import("../src/lib/deque");
-  for (let index = 0; index < 25; index++) await loadDeque();
-  const samples = [];
-  for (let index = 0; index < 1000; index++) {
-    const start = performance.now();
+  const legacySql = legacyDequeQuery();
+  for (let index = 0; index < 25; index++) {
     await loadDeque();
-    samples.push(performance.now() - start);
+    await db.getAllAsync(legacySql);
+  }
+  const samples = [];
+  const legacySamples = [];
+  for (let index = 0; index < 1000; index++) {
+    const measureNew = async () => {
+      const start = performance.now();
+      await loadDeque();
+      samples.push(performance.now() - start);
+    };
+    const measureLegacy = async () => {
+      const start = performance.now();
+      await db.getAllAsync(legacySql);
+      legacySamples.push(performance.now() - start);
+    };
+    // Alternate order to remove warm-cache, GC, and transient system-load
+    // bias. The previous two isolated 1,000-run blocks could report a 7x
+    // swing in the legacy p95 between consecutive executions.
+    if (index % 2 === 0) {
+      await measureNew();
+      await measureLegacy();
+    } else {
+      await measureLegacy();
+      await measureNew();
+    }
   }
 
   const p50 = percentile(samples, 0.5);
   const p95 = percentile(samples, 0.95);
   const maximum = Math.max(...samples);
-
-  const legacySql = legacyDequeQuery();
-  for (let index = 0; index < 25; index++) await db.getAllAsync(legacySql);
-  const legacySamples = [];
-  for (let index = 0; index < 1000; index++) {
-    const start = performance.now();
-    await db.getAllAsync(legacySql);
-    legacySamples.push(performance.now() - start);
-  }
   const legacyP95 = percentile(legacySamples, 0.95);
 
-  console.log(`migration/reclassification : ${migrationMs.toFixed(1)} ms (${articles.length} articles)`);
-  console.log(`topic scoring             : ${(scorePerArticleMs * 1000).toFixed(1)} µs/article`);
-  console.log(`loadDeque (1000 runs)     : p50 ${p50.toFixed(2)} ms · p95 ${p95.toFixed(2)} ms · max ${maximum.toFixed(2)} ms`);
+  console.log(
+    `migration/reclassification : ${migrationMs.toFixed(1)} ms (${articles.length} articles)`,
+  );
+  console.log(
+    `topic scoring             : ${(scorePerArticleMs * 1000).toFixed(1)} µs/article`,
+  );
+  console.log(
+    `loadDeque (1000 runs)     : p50 ${p50.toFixed(2)} ms · p95 ${p95.toFixed(2)} ms · max ${maximum.toFixed(2)} ms`,
+  );
   console.log(`legacy deque SQL          : p95 ${legacyP95.toFixed(2)} ms`);
 
   if (scorePerArticleMs > 0.2) {
@@ -134,7 +156,9 @@ try {
     throw new Error("loadDeque p95 exceeded 25 ms on the desktop harness");
   }
   if (p95 > legacyP95 * 1.25) {
-    throw new Error("new loadDeque is materially slower than the legacy sampler");
+    throw new Error(
+      "new loadDeque is materially slower than the legacy sampler",
+    );
   }
 } finally {
   rmSync(tempDir, { recursive: true, force: true });

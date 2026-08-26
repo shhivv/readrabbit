@@ -8,10 +8,13 @@ function compactWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-const NON_AUTHOR_LABEL = /^(?:posted on|published by|written by|admin|administrator|editor|staff|unknown|anonymous|\?)$/i;
+const NON_AUTHOR_LABEL =
+  /^(?:posted on|published by|written by|admin|administrator|editor|staff|unknown|anonymous|\?)$/i;
 const AGGREGATOR_SUBMITTER = /^[^\s]+\.[a-z]{2,}\s+(?:via|by)\s+\S+$/i;
-const TRAILING_NEWS_DATE = /\s+(?:·\s*)?(?:posted|published|updated|last updated)\b.*$/i;
-const TRAILING_CALENDAR_DATE = /\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}.*$/i;
+const TRAILING_NEWS_DATE =
+  /\s+(?:·\s*)?(?:posted|published|updated|last updated)\b.*$/i;
+const TRAILING_CALENDAR_DATE =
+  /\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}.*$/i;
 const HOSTNAME_BYLINE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/.*)?$/i;
 
 export function cleanAuthorName(value: string): string {
@@ -19,7 +22,7 @@ export function cleanAuthorName(value: string): string {
   const featuredBy = author.match(/^featuring\b.*?\.\s*by\s+(.+?)(?:\s+on)?$/i);
   if (featuredBy) author = featuredBy[1];
   const publishedBy = author.match(
-    /^published by\s+(.+?)\s+view all posts by\b/i
+    /^published by\s+(.+?)\s+view all posts by\b/i,
   );
   if (publishedBy) author = publishedBy[1];
   const transportedName = author.match(/^\S+@\S+\s+\(([^)]+)\)$/i);
@@ -31,13 +34,16 @@ export function cleanAuthorName(value: string): string {
   const newsSegments = author.split(/\s+·\s+/);
   if (
     newsSegments.length > 1 &&
-    newsSegments.slice(1).some((part) => /\b(?:news|posted|updated)\b/i.test(part))
+    newsSegments
+      .slice(1)
+      .some((part) => /\b(?:news|posted|updated)\b/i.test(part))
   ) {
     author = newsSegments[0];
   }
   author = compactWhitespace(author);
   if (AGGREGATOR_SUBMITTER.test(author)) return "";
   if (NON_AUTHOR_LABEL.test(author)) return "";
+  author = author.replace(/\s+on$/i, "");
   if (/\bstaff$/i.test(author) || /(?:'s|s)?\s*blog$/i.test(author)) return "";
   if (HOSTNAME_BYLINE.test(author)) return "";
   return author;
@@ -67,7 +73,8 @@ export function getArticleAttribution(article: {
   }
 
   const sameAsSite =
-    siteName.length > 0 && normalizeAuthorKey(author) === normalizeAuthorKey(siteName);
+    siteName.length > 0 &&
+    normalizeAuthorKey(author) === normalizeAuthorKey(siteName);
 
   return {
     primary: author,

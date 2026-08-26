@@ -9,7 +9,10 @@ import {
   Share,
   ActivityIndicator,
 } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import {
   GestureDetector,
   Gesture,
@@ -67,7 +70,7 @@ const SWIPE_COMMIT_DISTANCE = 60;
 const SWIPE_FLICK_VELOCITY = 500;
 const BOOKMARK_BLUE = "#4da3ff";
 const DIVERSE_OPENING_READY_KEY = "diverse_opening_ready_v1";
-const DIVERSE_OPENING_MAX_WAIT_MS = 12_000;
+const DIVERSE_OPENING_MAX_WAIT_MS = 15_000;
 
 // ---------- article model ----------
 
@@ -100,9 +103,7 @@ function touchCache(id: number, value: HydratedArticle) {
 // normalizing pre-rendered katex wrappers into plain tags along the way.
 function splitSegments(contentHtml: string): Segment[] {
   try {
-    const { document } = parseHTML(
-      `<html><body>${contentHtml}</body></html>`
-    );
+    const { document } = parseHTML(`<html><body>${contentHtml}</body></html>`);
 
     // nc-math → display: div.nc-katex-display / inline: unwrap children
     for (const node of Array.from(document.querySelectorAll("nc-math"))) {
@@ -191,15 +192,22 @@ async function hydrate(id: number): Promise<HydratedArticle | null> {
 // ---------- formatting helpers ----------
 
 function decodeEntities(str: string): string {
-  return str
-    .replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|(\w+));/g, (match, dec, hex, named) => {
+  return str.replace(
+    /&(?:#(\d+)|#x([0-9a-fA-F]+)|(\w+));/g,
+    (match, dec, hex, named) => {
       if (dec) return String.fromCharCode(parseInt(dec, 10));
       if (hex) return String.fromCharCode(parseInt(hex, 16));
       const entities: Record<string, string> = {
-        amp: "&", lt: "<", gt: ">", quot: '"', nbsp: " ", apos: "'",
+        amp: "&",
+        lt: "<",
+        gt: ">",
+        quot: '"',
+        nbsp: " ",
+        apos: "'",
       };
       return entities[named] ?? match;
-    });
+    },
+  );
 }
 
 function formatDate(ms: number | null): string {
@@ -334,7 +342,11 @@ function ActionButton({
       }}
       onPress={onPress}
       hitSlop={12}
-      style={[styles.actionBtn, active && styles.actionBtnActive, animatedStyle]}
+      style={[
+        styles.actionBtn,
+        active && styles.actionBtnActive,
+        animatedStyle,
+      ]}
     >
       <Text style={[styles.actionLabel, active && styles.actionLabelActive]}>
         {label}
@@ -351,7 +363,7 @@ function HeartBadge({ liked }: { liked: boolean }) {
     if (liked) {
       scale.value = withSequence(
         withSpring(1.35, { damping: 8, stiffness: 420, mass: 0.4 }),
-        withSpring(1, SPRING_CONFIG)
+        withSpring(1, SPRING_CONFIG),
       );
       opacity.value = withTiming(1, { duration: 120 });
     } else {
@@ -396,11 +408,11 @@ function TappableParagraph({
   useEffect(() => {
     enterOpacity.value = withDelay(
       enterDelay,
-      withTiming(1, { duration: ENTER_DURATION, easing: ENTER_EASE })
+      withTiming(1, { duration: ENTER_DURATION, easing: ENTER_EASE }),
     );
     enterY.value = withDelay(
       enterDelay,
-      withTiming(0, { duration: ENTER_DURATION, easing: ENTER_EASE })
+      withTiming(0, { duration: ENTER_DURATION, easing: ENTER_EASE }),
     );
   }, [enterDelay, enterOpacity, enterY]);
 
@@ -423,7 +435,7 @@ function TappableParagraph({
       if (next) {
         bgOpacity.value = withSequence(
           withTiming(0.14, { duration: 150 }),
-          withTiming(0.06, { duration: 500, easing: Easing.out(Easing.quad) })
+          withTiming(0.06, { duration: 500, easing: Easing.out(Easing.quad) }),
         );
         lineScale.value = withSpring(1, SPRING_CONFIG);
       } else {
@@ -488,7 +500,12 @@ function FadeImage({ uri, style }: { uri: string; style: any }) {
   );
 }
 
-function SkeletonBlock({ width, height, radius = 6, delay = 0 }: {
+function SkeletonBlock({
+  width,
+  height,
+  radius = 6,
+  delay = 0,
+}: {
   width: number | string;
   height: number;
   radius?: number;
@@ -501,12 +518,18 @@ function SkeletonBlock({ width, height, radius = 6, delay = 0 }: {
       delay,
       withRepeat(
         withSequence(
-          withTiming(0.09, { duration: 900, easing: Easing.inOut(Easing.ease) }),
-          withTiming(0.04, { duration: 900, easing: Easing.inOut(Easing.ease) })
+          withTiming(0.09, {
+            duration: 900,
+            easing: Easing.inOut(Easing.ease),
+          }),
+          withTiming(0.04, {
+            duration: 900,
+            easing: Easing.inOut(Easing.ease),
+          }),
         ),
         -1,
-        true
-      )
+        true,
+      ),
     );
   }, [delay, shimmer]);
 
@@ -545,7 +568,7 @@ function ArticleHeader({
     if (bookmarked !== prevBookmarked.current) {
       bookmarkScale.value = withSequence(
         withSpring(1.15, { damping: 8, stiffness: 500, mass: 0.3 }),
-        withSpring(1, SPRING_CONFIG)
+        withSpring(1, SPRING_CONFIG),
       );
       prevBookmarked.current = bookmarked;
     }
@@ -583,13 +606,17 @@ function ArticleHeader({
           {article.published_date ? (
             <>
               <Text style={styles.metaDot}>{"·"}</Text>
-              <Text style={styles.metaDate}>{formatDate(article.published_date)}</Text>
+              <Text style={styles.metaDate}>
+                {formatDate(article.published_date)}
+              </Text>
             </>
           ) : null}
           {article.word_count > 0 ? (
             <>
               <Text style={styles.metaDot}>{"·"}</Text>
-              <Text style={styles.metaDate}>{readTime(article.word_count)}</Text>
+              <Text style={styles.metaDate}>
+                {readTime(article.word_count)}
+              </Text>
             </>
           ) : null}
         </Animated.View>
@@ -613,7 +640,6 @@ function ArticleHeader({
       >
         {decodeEntities(article.title)}
       </Animated.Text>
-
     </View>
   );
 }
@@ -626,8 +652,18 @@ function InlineSkeleton({ contentWidth }: { contentWidth: number }) {
           <SkeletonBlock width={80} height={12} delay={0} />
           <SkeletonBlock width={100} height={12} delay={50} />
         </View>
-        <SkeletonBlock width={contentWidth * 0.9} height={28} radius={4} delay={80} />
-        <SkeletonBlock width={contentWidth * 0.7} height={28} radius={4} delay={100} />
+        <SkeletonBlock
+          width={contentWidth * 0.9}
+          height={28}
+          radius={4}
+          delay={80}
+        />
+        <SkeletonBlock
+          width={contentWidth * 0.7}
+          height={28}
+          radius={4}
+          delay={100}
+        />
         <View style={styles.metaRow}>
           <SkeletonBlock width={90} height={12} delay={160} />
         </View>
@@ -639,9 +675,21 @@ function InlineSkeleton({ contentWidth }: { contentWidth: number }) {
       <View style={{ gap: 16, marginTop: 28 }}>
         {[0, 1, 2, 3, 4].map((i) => (
           <View key={i} style={{ gap: 8 }}>
-            <SkeletonBlock width={contentWidth} height={14} delay={300 + i * 40} />
-            <SkeletonBlock width={contentWidth * 0.85} height={14} delay={320 + i * 40} />
-            <SkeletonBlock width={contentWidth * 0.65} height={14} delay={340 + i * 40} />
+            <SkeletonBlock
+              width={contentWidth}
+              height={14}
+              delay={300 + i * 40}
+            />
+            <SkeletonBlock
+              width={contentWidth * 0.85}
+              height={14}
+              delay={320 + i * 40}
+            />
+            <SkeletonBlock
+              width={contentWidth * 0.65}
+              height={14}
+              delay={340 + i * 40}
+            />
           </View>
         ))}
       </View>
@@ -702,7 +750,7 @@ export default function ReaderScreen() {
         () => {
           hydrate(id).catch(() => {});
         },
-        (offset += behind ? 0 : 60)
+        (offset += behind ? 0 : 60),
       );
     }
   }, []);
@@ -753,7 +801,7 @@ export default function ReaderScreen() {
       }
       return true;
     },
-    [prefetchAround, showArticle]
+    [prefetchAround, showArticle],
   );
 
   // Boot into a fresh unseen card. On the first run after this diversity
@@ -809,7 +857,7 @@ export default function ReaderScreen() {
       return () => {
         cancelled = true;
       };
-    }, [])
+    }, []),
   );
 
   // starving: nothing readable yet (first run or drained) — poll until the
@@ -831,7 +879,7 @@ export default function ReaderScreen() {
     };
 
     tick();
-    const interval = setInterval(tick, 4000);
+    const interval = setInterval(tick, 2000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -873,7 +921,10 @@ export default function ReaderScreen() {
         currentIndexRef.current = idx;
         setCurrentIndex(idx);
 
-        if (previousArticle && articleRef.current?.row.id !== previousArticle.row.id) {
+        if (
+          previousArticle &&
+          articleRef.current?.row.id !== previousArticle.row.id
+        ) {
           pendingReveal.current = "instant";
           articleRef.current = previousArticle;
           setArticle(previousArticle);
@@ -980,7 +1031,7 @@ export default function ReaderScreen() {
         swipeCommitted.value = false;
       }
     },
-    [showArticle, prefetchAround, translateX, opacity, swipeCommitted]
+    [showArticle, prefetchAround, translateX, opacity, swipeCommitted],
   );
 
   const goNext = useCallback(() => navigate(1), [navigate]);
@@ -1139,7 +1190,10 @@ export default function ReaderScreen() {
 
       if (swipedForward && hasNext) {
         swipeCommitted.value = true;
-        opacity.value = withTiming(0, { duration: 150, easing: Easing.in(Easing.quad) });
+        opacity.value = withTiming(0, {
+          duration: 150,
+          easing: Easing.in(Easing.quad),
+        });
         translateX.value = withTiming(
           -width * 0.25,
           { duration: 150, easing: Easing.in(Easing.quad) },
@@ -1151,11 +1205,14 @@ export default function ReaderScreen() {
               translateX.value = withSpring(0, SPRING_CONFIG);
               opacity.value = withSpring(1, SPRING_CONFIG);
             }
-          }
+          },
         );
       } else if (swipedBackward && hasPrev) {
         swipeCommitted.value = true;
-        opacity.value = withTiming(0, { duration: 150, easing: Easing.in(Easing.quad) });
+        opacity.value = withTiming(0, {
+          duration: 150,
+          easing: Easing.in(Easing.quad),
+        });
         translateX.value = withTiming(
           width * 0.25,
           { duration: 150, easing: Easing.in(Easing.quad) },
@@ -1167,7 +1224,7 @@ export default function ReaderScreen() {
               translateX.value = withSpring(0, SPRING_CONFIG);
               opacity.value = withSpring(1, SPRING_CONFIG);
             }
-          }
+          },
         );
       } else {
         translateX.value = withSpring(0, SPRING_CONFIG);
@@ -1188,7 +1245,7 @@ export default function ReaderScreen() {
     const scale = interpolate(
       Math.abs(translateX.value),
       [0, width * 0.3],
-      [1, 0.97]
+      [1, 0.97],
     );
     return {
       transform: [{ translateX: translateX.value }, { scale }],
@@ -1234,8 +1291,7 @@ export default function ReaderScreen() {
                 contentContainerStyle={[
                   styles.scrollContent,
                   {
-                    paddingTop:
-                      insets.top + OVERFLOW_BUTTON_SIZE + spacing.lg,
+                    paddingTop: insets.top + OVERFLOW_BUTTON_SIZE + spacing.lg,
                   },
                 ]}
                 showsVerticalScrollIndicator={false}
@@ -1257,34 +1313,36 @@ export default function ReaderScreen() {
 
                 {article.segments.length > 0 ? (
                   <View style={styles.segmentList}>
-                {article.segments.map((seg) =>
-                  seg.code ? (
-                    <Animated.View
-                      key={`${article.row.id}-code-${seg.index}`}
-                      entering={FadeIn.duration(ENTER_DURATION)
-                        .easing(ENTER_EASE)
-                        .delay(Math.min(240 + seg.index * 30, 800))}
-                    >
-                      <CodeBlock
-                        code={seg.code.text}
-                        langHint={seg.code.lang ?? undefined}
-                      />
-                    </Animated.View>
-                  ) : (
-                    <TappableParagraph
-                      key={`${article.row.id}-${seg.index}`}
-                      segment={seg}
-                      articleId={article.row.id}
-                      liked={article.likedIndices.has(seg.index)}
-                      contentWidth={contentWidth}
-                      enterDelay={Math.min(240 + seg.index * 30, 800)}
-                    />
-                  )
-                )}
+                    {article.segments.map((seg) =>
+                      seg.code ? (
+                        <Animated.View
+                          key={`${article.row.id}-code-${seg.index}`}
+                          entering={FadeIn.duration(ENTER_DURATION)
+                            .easing(ENTER_EASE)
+                            .delay(Math.min(240 + seg.index * 30, 800))}
+                        >
+                          <CodeBlock
+                            code={seg.code.text}
+                            langHint={seg.code.lang ?? undefined}
+                          />
+                        </Animated.View>
+                      ) : (
+                        <TappableParagraph
+                          key={`${article.row.id}-${seg.index}`}
+                          segment={seg}
+                          articleId={article.row.id}
+                          liked={article.likedIndices.has(seg.index)}
+                          contentWidth={contentWidth}
+                          enterDelay={Math.min(240 + seg.index * 30, 800)}
+                        />
+                      ),
+                    )}
                   </View>
                 ) : (
                   <Animated.View
-                    entering={FadeIn.duration(ENTER_DURATION).easing(ENTER_EASE).delay(360)}
+                    entering={FadeIn.duration(ENTER_DURATION)
+                      .easing(ENTER_EASE)
+                      .delay(360)}
                   >
                     <Text style={styles.plainText}>{article.row.excerpt}</Text>
                   </Animated.View>
@@ -1305,7 +1363,9 @@ export default function ReaderScreen() {
         </GestureDetector>
         <OverflowMenu
           bookmarked={bookmarked}
-          canMuteAuthor={article ? getArticleAttribution(article.row).hasAuthor : false}
+          canMuteAuthor={
+            article ? getArticleAttribution(article.row).hasAuthor : false
+          }
           onToggleBookmark={toggleBookmark}
           onShare={shareArticle}
           onNotInterested={notInterested}
@@ -1317,7 +1377,10 @@ export default function ReaderScreen() {
   );
 }
 
-async function setArticleBookmark(articleId: number, next: boolean): Promise<void> {
+async function setArticleBookmark(
+  articleId: number,
+  next: boolean,
+): Promise<void> {
   await setBookmarked(articleId, next);
 }
 
@@ -1352,7 +1415,11 @@ function OverflowMenu({
   const toggle = useCallback(() => {
     const next = !expanded;
     setExpanded(next);
-    open.value = withSpring(next ? 1 : 0, { damping: 18, stiffness: 280, mass: 0.5 });
+    open.value = withSpring(next ? 1 : 0, {
+      damping: 18,
+      stiffness: 280,
+      mass: 0.5,
+    });
   }, [expanded, open]);
 
   const close = useCallback(() => {
@@ -1381,7 +1448,14 @@ function OverflowMenu({
           break;
       }
     },
-    [close, onToggleBookmark, onShare, onNotInterested, onMuteAuthor, onSettings]
+    [
+      close,
+      onToggleBookmark,
+      onShare,
+      onNotInterested,
+      onMuteAuthor,
+      onSettings,
+    ],
   );
 
   const overlayStyle = useAnimatedStyle(() => ({
@@ -1404,7 +1478,11 @@ function OverflowMenu({
     <>
       <Animated.View
         pointerEvents={expanded ? "auto" : "none"}
-        style={[StyleSheet.absoluteFill, { backgroundColor: "#000" }, overlayStyle]}
+        style={[
+          StyleSheet.absoluteFill,
+          { backgroundColor: "#000" },
+          overlayStyle,
+        ]}
       >
         <Pressable style={StyleSheet.absoluteFill} onPress={close} />
       </Animated.View>
@@ -1419,7 +1497,9 @@ function OverflowMenu({
         pointerEvents="box-none"
       >
         <AnimatedPressable
-          accessibilityLabel={expanded ? "Close article menu" : "Open article menu"}
+          accessibilityLabel={
+            expanded ? "Close article menu" : "Open article menu"
+          }
           accessibilityRole="button"
           accessibilityState={{ expanded }}
           hitSlop={6}
@@ -1439,7 +1519,7 @@ function OverflowMenu({
           style={[overflowStyles.menu, menuStyle]}
         >
           {OVERFLOW_ITEMS.filter(
-            (item) => item.key !== "mute-author" || canMuteAuthor
+            (item) => item.key !== "mute-author" || canMuteAuthor,
           ).map((item, index) => {
             const active = item.key === "bookmark" && bookmarked;
             const label = active ? "Bookmarked" : item.label;

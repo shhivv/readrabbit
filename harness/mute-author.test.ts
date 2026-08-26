@@ -82,7 +82,7 @@ describe("article attribution", () => {
       getArticleAttribution({
         author: "  Claudia Goldin ",
         site_name: "Economics Observatory",
-      })
+      }),
     ).toEqual({
       primary: "Claudia Goldin",
       secondary: "Economics Observatory",
@@ -92,7 +92,7 @@ describe("article attribution", () => {
 
   test("falls back to the publication when no byline exists", () => {
     expect(
-      getArticleAttribution({ author: "", site_name: "Quanta Magazine" })
+      getArticleAttribution({ author: "", site_name: "Quanta Magazine" }),
     ).toEqual({
       primary: "Quanta Magazine",
       secondary: "",
@@ -102,56 +102,62 @@ describe("article attribution", () => {
 
   test("rejects scraper labels and cleans aggregator bylines", () => {
     expect(
-      getArticleAttribution({ author: "Posted on", site_name: "FRED Blog" })
+      getArticleAttribution({ author: "Posted on", site_name: "FRED Blog" }),
     ).toEqual({ primary: "FRED Blog", secondary: "", hasAuthor: false });
     expect(
       getArticleAttribution({
         author: "Denise Gaskins commented on Math Blog",
         site_name: "Mathblogging.org",
-      }).primary
+      }).primary,
     ).toBe("Denise Gaskins");
     expect(
       getArticleAttribution({
         author: "burakemir.ch via abhin4v",
         site_name: "burakemir.ch",
-      })
+      }),
     ).toEqual({ primary: "burakemir.ch", secondary: "", hasAuthor: false });
     expect(
       getArticleAttribution({
         author:
           "Simon Little · CBC News · Posted: Aug 22, 2026 | Last Updated: August 22",
         site_name: "CBC",
-      }).primary
+      }).primary,
     ).toBe("Simon Little");
     expect(
       getArticleAttribution({
         author: "serendipity@perrotta.dev Thiago Perrotta",
         site_name: "Thiago's notes",
-      }).primary
+      }).primary,
     ).toBe("Thiago Perrotta");
     expect(
       getArticleAttribution({
         author: "Published by Boaz Barak View all posts by Boaz Barak",
         site_name: "Windows on Theory",
-      }).primary
+      }).primary,
     ).toBe("Boaz Barak");
     expect(
       getArticleAttribution({
         author: "Featuring Mark L. Egan. By Rachel Layne on",
         site_name: "EconoFact",
-      }).primary
+      }).primary,
+    ).toBe("Rachel Layne");
+    expect(
+      getArticleAttribution({
+        author: "Rachel Layne on",
+        site_name: "EconoFact",
+      }).primary,
     ).toBe("Rachel Layne");
     expect(
       getArticleAttribution({
         author: "Al Jazeera Staff",
         site_name: "Al Jazeera",
-      })
+      }),
     ).toEqual({ primary: "Al Jazeera", secondary: "", hasAuthor: false });
     expect(
       getArticleAttribution({
         author: "pyfound.blogspot.com",
         site_name: "Python Software Foundation",
-      })
+      }),
     ).toEqual({
       primary: "Python Software Foundation",
       secondary: "",
@@ -164,11 +170,11 @@ describe("author preference and exposure persistence", () => {
   test("migrates and backfills existing bylines", async () => {
     const db = await getDb();
     const version = await db.getFirstAsync<{ user_version: number }>(
-      "PRAGMA user_version"
+      "PRAGMA user_version",
     );
     const row = await db.getFirstAsync<{ author_key: string }>(
       "SELECT author_key FROM articles WHERE url = ?",
-      ["https://legacy.example/essay"]
+      ["https://legacy.example/essay"],
     );
 
     expect(version?.user_version).toBeGreaterThanOrEqual(13);
@@ -240,7 +246,7 @@ describe("author preference and exposure persistence", () => {
     const db = await getDb();
     const row = await db.getFirstAsync<{ author_key: string }>(
       "SELECT author_key FROM articles WHERE id = ?",
-      [articleId!]
+      [articleId!],
     );
 
     expect(row?.author_key).toBe(normalizeAuthorKey("Grace Hopper"));
@@ -289,7 +295,7 @@ describe("author preference and exposure persistence", () => {
       secondId!,
     ]);
     expect(
-      (await getIdentityExposure("author", "elinor ostrom"))?.exposure_count
+      (await getIdentityExposure("author", "elinor ostrom"))?.exposure_count,
     ).toBe(2);
   });
 
@@ -328,8 +334,8 @@ describe("author preference and exposure persistence", () => {
           excerpt: "economics policy markets incentives",
           topic: "economics",
           score: 0.4,
-        })
-      )
+        }),
+      ),
     );
     expect(seenId).not.toBeNull();
     expect(familiarId).not.toBeNull();
@@ -373,7 +379,7 @@ describe("author preference and exposure persistence", () => {
             "prolific.example",
             Date.now(),
             Date.now(),
-          ]
+          ],
         );
       }
       for (let index = 0; index < 12; index++) {
@@ -392,7 +398,7 @@ describe("author preference and exposure persistence", () => {
             `long-tail-${index}.example`,
             Date.now(),
             Date.now(),
-          ]
+          ],
         );
         longTailIds.push(result.lastInsertRowId);
       }
@@ -402,8 +408,11 @@ describe("author preference and exposure persistence", () => {
     expect(longTailIds.every((id) => deque.includes(id))).toBe(true);
     const firstDomains = await db.getAllAsync<{ site_domain: string }>(
       `SELECT DISTINCT site_domain FROM articles
-       WHERE id IN (${deque.slice(0, 12).map(() => "?").join(", ")})`,
-      deque.slice(0, 12)
+       WHERE id IN (${deque
+         .slice(0, 12)
+         .map(() => "?")
+         .join(", ")})`,
+      deque.slice(0, 12),
     );
     expect(firstDomains).toHaveLength(12);
   });
@@ -411,7 +420,7 @@ describe("author preference and exposure persistence", () => {
   test("rescues an underrepresented topic from a much larger candidate pool", async () => {
     const db = await getDb();
     await db.execAsync(
-      "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+      "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     );
     const previousTopics = await kvGet("topics");
     await kvSet("topics", JSON.stringify(["technology", "math"]));
@@ -433,7 +442,7 @@ describe("author preference and exposure persistence", () => {
             `dominant-tech-${index}.example`,
             Date.now(),
             Date.now(),
-          ]
+          ],
         );
       }
       for (let index = 0; index < 18; index++) {
@@ -452,7 +461,7 @@ describe("author preference and exposure persistence", () => {
             `scarce-math-${index}.example`,
             Date.now(),
             Date.now(),
-          ]
+          ],
         );
       }
     });
@@ -462,9 +471,11 @@ describe("author preference and exposure persistence", () => {
       `SELECT topic, COUNT(*) AS count FROM articles
        WHERE id IN (${deque.map(() => "?").join(", ")})
        GROUP BY topic`,
-      deque
+      deque,
     );
-    expect(Object.fromEntries(counts.map((row) => [row.topic, row.count]))).toEqual({
+    expect(
+      Object.fromEntries(counts.map((row) => [row.topic, row.count])),
+    ).toEqual({
       math: 18,
       technology: 18,
     });

@@ -50,8 +50,7 @@ export interface DequeState {
 type CandidateRow = PersistentExposureCandidate;
 
 function weightedCandidateQuery(topicCount: number): string {
-  const ageDays =
-    `(strftime('%s','now') * 1000 - COALESCE(a.published_date, a.fetched_at)) / 86400000.0`;
+  const ageDays = `(strftime('%s','now') * 1000 - COALESCE(a.published_date, a.fetched_at)) / 86400000.0`;
   const recency = `POWER(0.5, MAX(${ageDays}, -30) / ${HALF_LIFE_DAYS}.0)`;
   const uniform = `((ABS(RANDOM()) % 1000000) + 1) / 1000001.0`;
   const trust = `(0.75 + 0.5 * MIN(MAX(a.score, 0.0), 1.0))`;
@@ -130,21 +129,21 @@ export async function loadDiverseOpeningDeque(): Promise<number[]> {
 
 async function loadDequeWindow(
   selectedTopics: Topic[],
-  excludedIds: readonly number[] = []
+  excludedIds: readonly number[] = [],
 ): Promise<number[]> {
   return (await buildDequeWindow(selectedTopics, excludedIds)).map(
-    (row) => row.id
+    (row) => row.id,
   );
 }
 
 async function buildDequeWindow(
   selectedTopics: Topic[],
-  excludedIds: readonly number[] = []
+  excludedIds: readonly number[] = [],
 ): Promise<CandidateRow[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<CandidateRow>(
     weightedCandidateQuery(selectedTopics.length),
-    [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE]
+    [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE],
   );
   const excluded = new Set(excludedIds);
   const rowsById = new Map(rows.map((row) => [row.id, row]));
@@ -155,32 +154,44 @@ async function buildDequeWindow(
   // that share). Typical generations stay a single SQLite read.
   for (const topic of selectedTopics) {
     const available = rows.filter(
-      (row) => row.topic === topic && !excluded.has(row.id)
+      (row) => row.topic === topic && !excluded.has(row.id),
     ).length;
     if (available >= minimumPerTopic) continue;
 
     const rescueRows = await db.getAllAsync<CandidateRow>(
       weightedCandidateQuery(1),
-      [MIN_TOPIC_RELEVANCE, topic, CANDIDATE_POOL_SIZE]
+      [MIN_TOPIC_RELEVANCE, topic, CANDIDATE_POOL_SIZE],
     );
     for (const row of rescueRows) rowsById.set(row.id, row);
   }
 
-  const exposureAdjusted = coolByPersistentExposure([
-    ...rowsById.values(),
-  ]).filter((row) => !excluded.has(row.id));
-  const priorCandidates = await loadDiversityContext(db, excludedIds);
+  const availableRows = [...rowsById.values()].filter(
+    (row) => !excluded.has(row.id),
+  );
+  const hasRelevantHistory = availableRows.some(
+    (row) => row.authorExposureCount > 0 || row.domainExposureCount > 0,
+  );
+  // On a fresh install every exposure cost is zero, so sorting would return
+  // exactly the SQL order after allocating hundreds of wrapper objects. Keep
+  // that common path allocation-free; restarts still get the full cooldown.
+  const exposureAdjusted = hasRelevantHistory
+    ? coolByPersistentExposure(availableRows)
+    : availableRows;
+  const priorCandidates =
+    excludedIds.length > 0 || hasRelevantHistory
+      ? await loadDiversityContext(db, excludedIds)
+      : [];
   return buildDiverseSlate(
     exposureAdjusted,
     WINDOW_SIZE,
     selectedTopics,
-    priorCandidates
+    priorCandidates,
   );
 }
 
 async function loadDiversityContext(
   db: Awaited<ReturnType<typeof getDb>>,
-  queuedIds: readonly number[]
+  queuedIds: readonly number[],
 ): Promise<RecommendationCandidate[]> {
   const domain =
     `COALESCE(NULLIF(site_domain, ''), ` +
@@ -193,7 +204,7 @@ async function loadDiversityContext(
       `SELECT id, topic, author_key AS authorKey, ${domain} AS domain
        FROM articles
        WHERE id IN (${contextIds.map(() => "?").join(", ")})`,
-      contextIds
+      contextIds,
     );
     const byId = new Map(rows.map((row) => [row.id, row]));
     return contextIds
@@ -208,7 +219,7 @@ async function loadDiversityContext(
        AND topic IN ('technology', 'economics', 'math')
      ORDER BY read_at DESC
      LIMIT ?`,
-    [DIVERSITY_CONTEXT_SIZE]
+    [DIVERSITY_CONTEXT_SIZE],
   );
   return recent.reverse();
 }
@@ -221,7 +232,7 @@ export async function countEligible(): Promise<number> {
 export async function countEligibleByTopic(): Promise<Map<Topic, number>> {
   const selectedTopics = await getSelectedTopics();
   const counts = new Map<Topic, number>(
-    selectedTopics.map((topic) => [topic, 0])
+    selectedTopics.map((topic) => [topic, 0]),
   );
   if (selectedTopics.length === 0) return counts;
   const db = await getDb();
@@ -239,7 +250,7 @@ export async function countEligibleByTopic(): Promise<Map<Topic, number>> {
          WHERE a.author_key != '' AND muted.author_key = a.author_key
        )
      GROUP BY a.topic`,
-    [MIN_WORDS, MIN_TOPIC_RELEVANCE, ...selectedTopics]
+    [MIN_WORDS, MIN_TOPIC_RELEVANCE, ...selectedTopics],
   );
   for (const row of rows) counts.set(row.topic, row.c);
   return counts;

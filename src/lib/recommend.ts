@@ -22,7 +22,7 @@ function identityExposurePenalty(
   now: number,
   recencyWeight: number,
   halfLifeDays: number,
-  historyWeight: number
+  historyWeight: number,
 ): number {
   if (count <= 0) return 0;
   const ageDays = lastExposedAt
@@ -34,8 +34,7 @@ function identityExposurePenalty(
   // Recency fades, but the tiny log-scaled memory remains: an unseen voice is
   // still preferable to one that has occupied many cards over the app's life.
   return (
-    recencyWeight * recency +
-    historyWeight * Math.log2(Math.max(1, count) + 1)
+    recencyWeight * recency + historyWeight * Math.log2(Math.max(1, count) + 1)
   );
 }
 
@@ -47,7 +46,7 @@ function identityExposurePenalty(
  */
 export function persistentExposureCost(
   candidate: PersistentExposureCandidate,
-  now = Date.now()
+  now = Date.now(),
 ): number {
   // When extraction cannot find a trustworthy byline, the publication is the
   // voice. Giving that fallback only the weaker domain penalty lets anonymous
@@ -59,7 +58,7 @@ export function persistentExposureCost(
       now,
       100,
       45,
-      2
+      2,
     );
   }
   const author = candidate.authorKey
@@ -69,7 +68,7 @@ export function persistentExposureCost(
         now,
         100,
         45,
-        2
+        2,
       )
     : 0;
   const domain = candidate.domain
@@ -79,15 +78,16 @@ export function persistentExposureCost(
         now,
         25,
         21,
-        0.5
+        0.5,
       )
     : 0;
   return author + domain;
 }
 
-export function coolByPersistentExposure<
-  T extends PersistentExposureCandidate,
->(orderedCandidates: readonly T[], now = Date.now()): T[] {
+export function coolByPersistentExposure<T extends PersistentExposureCandidate>(
+  orderedCandidates: readonly T[],
+  now = Date.now(),
+): T[] {
   return orderedCandidates
     .map((candidate, rank) => ({
       candidate,
@@ -104,6 +104,8 @@ interface SelectionState {
   topicCounts: Map<Topic, number>;
   rollingTopicCounts: Map<Topic, number>;
   topicQuotas: Map<Topic, number>;
+  domainCap: number;
+  voiceCap: number;
   lastAuthor: Map<string, number>;
   lastDomain: Map<string, number>;
   topicBreadthByCandidate: Map<number, number>;
@@ -121,20 +123,22 @@ function voiceKey(candidate: RecommendationCandidate): string {
 export function hasDiverseOpening(
   slate: readonly RecommendationCandidate[],
   selectedTopics: Topic[],
-  openingSize = 12
+  openingSize = 12,
 ): boolean {
   if (slate.length < openingSize) return false;
 
   const opening = slate.slice(0, openingSize);
   if (new Set(opening.map(voiceKey)).size < openingSize) return false;
-  if (new Set(opening.map((candidate) => candidate.domain)).size < openingSize) {
+  if (
+    new Set(opening.map((candidate) => candidate.domain)).size < openingSize
+  ) {
     return false;
   }
 
   const topics = [...new Set(selectedTopics)];
   if (topics.length < 2) return true;
   const counts = topics.map(
-    (topic) => slate.filter((candidate) => candidate.topic === topic).length
+    (topic) => slate.filter((candidate) => candidate.topic === topic).length,
   );
   return Math.max(...counts) - Math.min(...counts) <= 1;
 }
@@ -142,7 +146,7 @@ export function hasDiverseOpening(
 function allocateTopicQuotas(
   selectedTopics: Topic[],
   candidates: readonly RecommendationCandidate[],
-  limit: number
+  limit: number,
 ): Map<Topic, number> {
   const topics = [...new Set(selectedTopics)];
   const available = new Map<Topic, number>(topics.map((topic) => [topic, 0]));
@@ -155,7 +159,7 @@ function allocateTopicQuotas(
   const quotas = new Map<Topic, number>(topics.map((topic) => [topic, 0]));
   let slots = Math.min(
     Math.max(0, limit),
-    [...available.values()].reduce((sum, count) => sum + count, 0)
+    [...available.values()].reduce((sum, count) => sum + count, 0),
   );
 
   // Water-fill the batch evenly. A topic that runs out simply stops taking
@@ -177,9 +181,124 @@ function allocateTopicQuotas(
   return quotas;
 }
 
+function fairIdentityCap(
+  candidates: readonly RecommendationCandidate[],
+  limit: number,
+  identityFor: (candidate: RecommendationCandidate) => string,
+): number {
+  const availability = new Map<string, number>();
+  for (const candidate of candidates) {
+    const identity = identityFor(candidate);
+    availability.set(identity, (availability.get(identity) ?? 0) + 1);
+  }
+  const slots = Math.min(Math.max(0, limit), candidates.length);
+  let cap = 0;
+  while (
+    [...availability.values()].reduce(
+      (sum, count) => sum + Math.min(count, cap),
+      0,
+    ) < slots
+  ) {
+    cap++;
+  }
+  return cap;
+}
+
+function maxVoiceDomainSupply(
+  candidates: readonly RecommendationCandidate[],
+  voiceCap: number,
+  domainCap: number,
+): number {
+  const voices = [...new Set(candidates.map(voiceKey))];
+  const domains = [...new Set(candidates.map((candidate) => candidate.domain))];
+  const voiceIndex = new Map(voices.map((voice, index) => [voice, index]));
+  const domainIndex = new Map(domains.map((domain, index) => [domain, index]));
+  const pairCounts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const pair = `${voiceIndex.get(voiceKey(candidate))}:${domainIndex.get(candidate.domain)}`;
+    pairCounts.set(pair, (pairCounts.get(pair) ?? 0) + 1);
+  }
+
+  const source = 0;
+  const voiceOffset = 1;
+  const domainOffset = voiceOffset + voices.length;
+  const sink = domainOffset + domains.length;
+  const graph: { to: number; capacity: number; reverse: number }[][] =
+    Array.from({ length: sink + 1 }, () => []);
+  const addEdge = (from: number, to: number, capacity: number) => {
+    graph[from].push({ to, capacity, reverse: graph[to].length });
+    graph[to].push({ to: from, capacity: 0, reverse: graph[from].length - 1 });
+  };
+
+  voices.forEach((_, index) => addEdge(source, voiceOffset + index, voiceCap));
+  domains.forEach((_, index) => addEdge(domainOffset + index, sink, domainCap));
+  for (const [pair, capacity] of pairCounts) {
+    const [voice, domain] = pair.split(":").map(Number);
+    addEdge(voiceOffset + voice, domainOffset + domain, capacity);
+  }
+
+  let flow = 0;
+  for (;;) {
+    const parent: ([number, number] | null)[] = Array(sink + 1).fill(null);
+    const queue = [source];
+    for (
+      let cursor = 0;
+      cursor < queue.length && parent[sink] == null;
+      cursor++
+    ) {
+      const node = queue[cursor];
+      for (let edgeIndex = 0; edgeIndex < graph[node].length; edgeIndex++) {
+        const edge = graph[node][edgeIndex];
+        if (
+          edge.capacity <= 0 ||
+          edge.to === source ||
+          parent[edge.to] != null
+        ) {
+          continue;
+        }
+        parent[edge.to] = [node, edgeIndex];
+        queue.push(edge.to);
+      }
+    }
+    if (parent[sink] == null) break;
+
+    let amount = Number.POSITIVE_INFINITY;
+    for (let node = sink; node !== source;) {
+      const [previous, edgeIndex] = parent[node]!;
+      amount = Math.min(amount, graph[previous][edgeIndex].capacity);
+      node = previous;
+    }
+    for (let node = sink; node !== source;) {
+      const [previous, edgeIndex] = parent[node]!;
+      const edge = graph[previous][edgeIndex];
+      edge.capacity -= amount;
+      graph[node][edge.reverse].capacity += amount;
+      node = previous;
+    }
+    flow += amount;
+  }
+  return flow;
+}
+
+function fairJointVoiceCap(
+  candidates: readonly RecommendationCandidate[],
+  limit: number,
+  domainCap: number,
+): number {
+  const slots = Math.min(Math.max(0, limit), candidates.length);
+  let voiceCap = fairIdentityCap(candidates, slots, voiceKey);
+  while (
+    voiceCap < slots &&
+    maxVoiceDomainSupply(candidates, voiceCap, domainCap) < slots
+  ) {
+    voiceCap++;
+  }
+  return voiceCap;
+}
+
 function voiceCountFor(
   candidate: RecommendationCandidate,
-  state: SelectionState
+  state: SelectionState,
 ): number {
   return candidate.authorKey
     ? countFor(state.authorCounts, candidate.authorKey)
@@ -189,7 +308,7 @@ function voiceCountFor(
 function diversityTier(
   candidate: RecommendationCandidate,
   position: number,
-  state: SelectionState
+  state: SelectionState,
 ): number {
   const voiceCount = voiceCountFor(candidate, state);
   const domainCount = countFor(state.domainCounts, candidate.domain);
@@ -202,8 +321,7 @@ function diversityTier(
   const spaced =
     (lastVoice == null || position - lastVoice >= 6) &&
     (lastDomain == null || position - lastDomain >= 4);
-  const adjacent =
-    lastVoice === position - 1 || lastDomain === position - 1;
+  const adjacent = lastVoice === position - 1 || lastDomain === position - 1;
   const novelty =
     voiceCount === 0 && domainCount === 0
       ? 0
@@ -219,7 +337,15 @@ function diversityTier(
   // Adjacency is a hard experiential boundary: a new byline does not make two
   // consecutive cards from the same publication feel diverse. Outside that
   // boundary, unseen people still beat longer soft cooldowns.
-  return novelty * 2 + (spaced ? 0 : 1) + (adjacent ? 100 : 0);
+  const aboveFairDomainShare = domainCount >= state.domainCap;
+  const aboveFairVoiceShare = voiceCount >= state.voiceCap;
+  return (
+    novelty * 2 +
+    (spaced ? 0 : 1) +
+    (adjacent ? 100 : 0) +
+    (aboveFairDomainShare ? 2_000 : 0) +
+    (aboveFairVoiceShare ? 1_000 : 0)
+  );
 }
 
 function diversityCost(
@@ -227,7 +353,7 @@ function diversityCost(
   rank: number,
   remainingCount: number,
   position: number,
-  state: SelectionState
+  state: SelectionState,
 ): number {
   const domainCount = countFor(state.domainCounts, candidate.domain);
   const voiceCount = voiceCountFor(candidate, state);
@@ -252,27 +378,21 @@ function diversityCost(
 function selectCandidateIndex<T extends RecommendationCandidate>(
   remaining: T[],
   position: number,
-  state: SelectionState
+  state: SelectionState,
 ): number {
   let bestIndex = -1;
   let bestTier = Number.POSITIVE_INFINITY;
   let bestDomainBreadth = Number.POSITIVE_INFINITY;
   let bestTopicBreadth = Number.POSITIVE_INFINITY;
   let bestFallbackCost = Number.POSITIVE_INFINITY;
-  const eligibleTopics = new Set(
-    remaining
-      .filter(
-        (candidate) =>
-          (state.topicCounts.get(candidate.topic) ?? 0) <
-          (state.topicQuotas.get(candidate.topic) ?? 0)
-      )
-      .map((candidate) => candidate.topic)
-  );
-  const minimumRollingTopicCount = Math.min(
-    ...[...eligibleTopics].map(
-      (topic) => state.rollingTopicCounts.get(topic) ?? 0
-    )
-  );
+  let minimumRollingTopicCount = Number.POSITIVE_INFINITY;
+  for (const [topic, quota] of state.topicQuotas) {
+    if ((state.topicCounts.get(topic) ?? 0) >= quota) continue;
+    minimumRollingTopicCount = Math.min(
+      minimumRollingTopicCount,
+      state.rollingTopicCounts.get(topic) ?? 0,
+    );
+  }
 
   // One priority scan replaces five repeated findIndex passes. Within each
   // rule tier the original quality/random order is retained.
@@ -308,7 +428,7 @@ function selectCandidateIndex<T extends RecommendationCandidate>(
       index,
       remaining.length,
       position,
-      state
+      state,
     );
     if (
       tier < bestTier ||
@@ -340,7 +460,90 @@ export function buildDiverseSlate<T extends RecommendationCandidate>(
   orderedCandidates: T[],
   limit: number,
   selectedTopics: Topic[],
-  priorCandidates: readonly RecommendationCandidate[] = []
+  priorCandidates: readonly RecommendationCandidate[] = [],
+): T[] {
+  return buildDiverseSlateInternal(
+    orderedCandidates,
+    limit,
+    selectedTopics,
+    priorCandidates,
+    true,
+  );
+}
+
+function repairFairShare<T extends RecommendationCandidate>(
+  selected: readonly T[],
+  unused: readonly T[],
+  priorCandidates: readonly RecommendationCandidate[],
+  voiceCap: number,
+  domainCap: number,
+): { slate: T[]; changed: boolean } {
+  const slate = selected.slice();
+  const alternatives = unused.slice();
+  const voiceCounts = new Map<string, number>();
+  const domainCounts = new Map<string, number>();
+  const add = (candidate: RecommendationCandidate, amount: 1 | -1) => {
+    const voice = voiceKey(candidate);
+    voiceCounts.set(voice, (voiceCounts.get(voice) ?? 0) + amount);
+    domainCounts.set(
+      candidate.domain,
+      (domainCounts.get(candidate.domain) ?? 0) + amount,
+    );
+  };
+  for (const candidate of priorCandidates) add(candidate, 1);
+  for (const candidate of slate) add(candidate, 1);
+
+  let changed = false;
+  // Every successful pass removes at least one current cap violation. The
+  // bound prevents pathological fixtures from turning ranking into a search
+  // problem when the joint author/publication constraints are infeasible.
+  for (let pass = 0; pass < slate.length * 2; pass++) {
+    let repaired = false;
+    for (
+      let selectedIndex = slate.length - 1;
+      selectedIndex >= 0;
+      selectedIndex--
+    ) {
+      const current = slate[selectedIndex];
+      const currentVoice = voiceKey(current);
+      const voiceOverflow = (voiceCounts.get(currentVoice) ?? 0) > voiceCap;
+      const domainOverflow =
+        (domainCounts.get(current.domain) ?? 0) > domainCap;
+      if (!voiceOverflow && !domainOverflow) continue;
+
+      add(current, -1);
+      const alternativeIndex = alternatives.findIndex((candidate) => {
+        if (candidate.topic !== current.topic) return false;
+        return (
+          (voiceCounts.get(voiceKey(candidate)) ?? 0) < voiceCap &&
+          (domainCounts.get(candidate.domain) ?? 0) < domainCap
+        );
+      });
+      if (alternativeIndex < 0) {
+        add(current, 1);
+        continue;
+      }
+
+      const [replacement] = alternatives.splice(alternativeIndex, 1);
+      alternatives.push(current);
+      slate[selectedIndex] = replacement;
+      add(replacement, 1);
+      changed = true;
+      repaired = true;
+      break;
+    }
+    if (!repaired) break;
+  }
+
+  return { slate, changed };
+}
+
+function buildDiverseSlateInternal<T extends RecommendationCandidate>(
+  orderedCandidates: T[],
+  limit: number,
+  selectedTopics: Topic[],
+  priorCandidates: readonly RecommendationCandidate[],
+  repair: boolean,
 ): T[] {
   const remaining = orderedCandidates.slice();
   const result: T[] = [];
@@ -351,28 +554,51 @@ export function buildDiverseSlate<T extends RecommendationCandidate>(
     const topics = topicsByVoice.get(key) ?? new Set<Topic>();
     topics.add(candidate.topic);
     topicsByVoice.set(key, topics);
-    const domainTopics = topicsByDomain.get(candidate.domain) ?? new Set<Topic>();
+    const domainTopics =
+      topicsByDomain.get(candidate.domain) ?? new Set<Topic>();
     domainTopics.add(candidate.topic);
     topicsByDomain.set(candidate.domain, domainTopics);
   }
+  const capCandidates = [...priorCandidates, ...remaining];
+  // A refill is requested with one third of the current 36-card window still
+  // queued, so only the first two thirds of the appended slate are exposed
+  // before the next fairness decision. Size caps for that rolling horizon,
+  // not all 36 appended cards; otherwise late cards can consume a third share
+  // before a 60-card journey reaches the next refill boundary.
+  const appendedFairnessHorizon = priorCandidates.length
+    ? Math.max(12, Math.ceil((Math.max(0, limit) * 2) / 3))
+    : Math.max(0, limit);
+  const capWindow =
+    priorCandidates.length +
+    Math.min(appendedFairnessHorizon, remaining.length);
+  const domainCap = fairIdentityCap(
+    capCandidates,
+    capWindow,
+    (candidate) => candidate.domain,
+  );
+  const voiceCap = priorCandidates.length
+    ? fairJointVoiceCap(capCandidates, capWindow, domainCap)
+    : Number.POSITIVE_INFINITY;
   const state: SelectionState = {
     authorCounts: new Map(),
     domainCounts: new Map(),
     topicCounts: new Map(),
     rollingTopicCounts: new Map(
-      [...new Set(selectedTopics)].map((topic) => [topic, 0])
+      [...new Set(selectedTopics)].map((topic) => [topic, 0]),
     ),
     topicQuotas: allocateTopicQuotas(selectedTopics, remaining, limit),
+    domainCap,
+    voiceCap,
     lastAuthor: new Map(),
     lastDomain: new Map(),
     topicBreadthByCandidate: new Map(
       remaining.map((candidate) => [
         candidate.id,
         topicsByVoice.get(voiceKey(candidate))?.size ?? 1,
-      ])
+      ]),
     ),
     topicBreadthByDomain: new Map(
-      [...topicsByDomain].map(([domain, topics]) => [domain, topics.size])
+      [...topicsByDomain].map(([domain, topics]) => [domain, topics.size]),
     ),
   };
 
@@ -385,21 +611,21 @@ export function buildDiverseSlate<T extends RecommendationCandidate>(
     if (candidate.authorKey) {
       state.authorCounts.set(
         candidate.authorKey,
-        countFor(state.authorCounts, candidate.authorKey) + 1
+        countFor(state.authorCounts, candidate.authorKey) + 1,
       );
       state.lastAuthor.set(candidate.authorKey, position);
     }
     if (candidate.domain) {
       state.domainCounts.set(
         candidate.domain,
-        countFor(state.domainCounts, candidate.domain) + 1
+        countFor(state.domainCounts, candidate.domain) + 1,
       );
       state.lastDomain.set(candidate.domain, position);
     }
     if (state.rollingTopicCounts.has(candidate.topic)) {
       state.rollingTopicCounts.set(
         candidate.topic,
-        (state.rollingTopicCounts.get(candidate.topic) ?? 0) + 1
+        (state.rollingTopicCounts.get(candidate.topic) ?? 0) + 1,
       );
     }
   }
@@ -414,25 +640,47 @@ export function buildDiverseSlate<T extends RecommendationCandidate>(
     if (picked.authorKey) {
       state.authorCounts.set(
         picked.authorKey,
-        countFor(state.authorCounts, picked.authorKey) + 1
+        countFor(state.authorCounts, picked.authorKey) + 1,
       );
       state.lastAuthor.set(picked.authorKey, position);
     }
     if (picked.domain) {
       state.domainCounts.set(
         picked.domain,
-        countFor(state.domainCounts, picked.domain) + 1
+        countFor(state.domainCounts, picked.domain) + 1,
       );
       state.lastDomain.set(picked.domain, position);
     }
     state.topicCounts.set(
       picked.topic,
-      (state.topicCounts.get(picked.topic) ?? 0) + 1
+      (state.topicCounts.get(picked.topic) ?? 0) + 1,
     );
     state.rollingTopicCounts.set(
       picked.topic,
-      (state.rollingTopicCounts.get(picked.topic) ?? 0) + 1
+      (state.rollingTopicCounts.get(picked.topic) ?? 0) + 1,
     );
+  }
+
+  if (repair && priorCandidates.length > 0) {
+    const repaired = repairFairShare(
+      result,
+      remaining,
+      priorCandidates,
+      state.voiceCap,
+      state.domainCap,
+    );
+    if (repaired.changed) {
+      // The repaired set is already cap-feasible. Run the same lightweight
+      // ordering pass once more so swaps made near the tail also respect the
+      // normal author/publication spacing and rolling topic rhythm.
+      return buildDiverseSlateInternal(
+        repaired.slate,
+        limit,
+        selectedTopics,
+        priorCandidates,
+        false,
+      );
+    }
   }
 
   return result;
