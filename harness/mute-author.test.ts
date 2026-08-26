@@ -163,6 +163,30 @@ describe("article attribution", () => {
       secondary: "",
       hasAuthor: false,
     });
+    expect(
+      getArticleAttribution({
+        author: "Joseph Zeballos-Roig Wed,",
+        site_name: "Yahoo Finance",
+      }).primary
+    ).toBe("Joseph Zeballos-Roig");
+    expect(
+      getArticleAttribution({
+        author: "Brad ReedBrad Reed is a staff writer for Common Dreams.",
+        site_name: "Common Dreams",
+      }).primary
+    ).toBe("Brad Reed");
+    expect(
+      getArticleAttribution({
+        author: "Simons Foundation Hosts Pivot Fellowship Annual Meeting By Jane Beaufore",
+        site_name: "Simons Foundation",
+      }).primary
+    ).toBe("Jane Beaufore");
+    expect(
+      getArticleAttribution({
+        author: "2026-08-25 - By EVE Online Team",
+        site_name: "EVE Online",
+      })
+    ).toEqual({ primary: "EVE Online", secondary: "", hasAuthor: false });
   });
 });
 

@@ -79,7 +79,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 14;
+const DB_VERSION = 16;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -564,11 +564,11 @@ async function migrate(db: SQLite.SQLiteDatabase) {
     version = 13;
   }
 
-  // v14: strip publication boilerplate that some community feeds put in the
+  // v16: strip publication boilerplate that some community feeds put in the
   // byline field ("Published by … View all posts", staff labels, hostnames).
   // Rebuilding the compact exposure rows prevents those labels from keeping
   // their old recommendation penalty or mute identity after the cleanup.
-  if (version < 14) {
+  if (version < 16) {
     const articles = await db.getAllAsync<{
       id: number;
       author: string;
@@ -629,7 +629,7 @@ async function migrate(db: SQLite.SQLiteDatabase) {
       WHERE is_read = 1 AND read_at IS NOT NULL AND author_key != ''
       GROUP BY author_key;
     `);
-    version = 14;
+    version = 16;
   }
 
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);
