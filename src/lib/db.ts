@@ -651,6 +651,8 @@ async function migrate(db: SQLite.SQLiteDatabase) {
       SET status = 'paused', next_check_at = NULL
       WHERE feed_url = 'https://planetpython.org/rss20.xml'
          OR site_url = 'https://planetpython.org';
+
+      DELETE FROM kv WHERE key = 'disco:hn_last_at';
     `);
     version = 17;
   }

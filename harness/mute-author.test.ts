@@ -56,6 +56,8 @@ legacyDb.exec(`
     quality REAL NOT NULL DEFAULT 0,
     site_domain TEXT NOT NULL DEFAULT ''
   );
+  CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  INSERT INTO kv (key, value) VALUES ('disco:hn_last_at', '123456');
   INSERT INTO articles (url, title, author, fetched_at, is_read, read_at)
     VALUES (
       'https://legacy.example/essay',
@@ -265,6 +267,7 @@ describe("author preference and exposure persistence", () => {
     );
 
     expect(source).toEqual({ status: "paused", next_check_at: null });
+    expect(await kvGet("disco:hn_last_at")).toBeNull();
     expect(articles).toEqual([
       { url: "https://python.example/saved", is_archived: 0 },
       { url: "https://python.example/unread", is_archived: 1 },
