@@ -24,7 +24,6 @@ const db = await getDb();
 
 const SESSION_COUNT = Number.parseInt(process.env.SESSIONS ?? "250", 10);
 const HEAD_SIZE = 12;
-const WINDOW_SIZE = 36;
 const scenarios = [
   ["economics"],
   ["math"],
@@ -39,6 +38,59 @@ function fail(message) {
   throw new Error(`QUALITY GATE: ${message}`);
 }
 
+function canSupplyTopicsAtDomainCap(availability, topicDemand, cap) {
+  const domains = [...new Set(availability.map((row) => row.domain))];
+  const topics = [...topicDemand.keys()];
+  const source = 0;
+  const domainOffset = 1;
+  const topicOffset = domainOffset + domains.length;
+  const sink = topicOffset + topics.length;
+  const graph = Array.from({ length: sink + 1 }, () => []);
+  const addEdge = (from, to, capacity) => {
+    graph[from].push({ to, capacity, reverse: graph[to].length });
+    graph[to].push({ to: from, capacity: 0, reverse: graph[from].length - 1 });
+  };
+
+  domains.forEach((_, index) => addEdge(source, domainOffset + index, cap));
+  for (const row of availability) {
+    addEdge(
+      domainOffset + domains.indexOf(row.domain),
+      topicOffset + topics.indexOf(row.topic),
+      row.articles,
+    );
+  }
+  topics.forEach((topic, index) =>
+    addEdge(topicOffset + index, sink, topicDemand.get(topic) ?? 0),
+  );
+
+  let flow = 0;
+  for (;;) {
+    const parent = Array(sink + 1).fill(null);
+    const queue = [source];
+    for (let cursor = 0; cursor < queue.length && parent[sink] == null; cursor++) {
+      const node = queue[cursor];
+      for (let edgeIndex = 0; edgeIndex < graph[node].length; edgeIndex++) {
+        const edge = graph[node][edgeIndex];
+        if (edge.capacity <= 0 || edge.to === source || parent[edge.to] != null) {
+          continue;
+        }
+        parent[edge.to] = [node, edgeIndex];
+        queue.push(edge.to);
+      }
+    }
+    if (parent[sink] == null) break;
+    for (let node = sink; node !== source;) {
+      const [previous, edgeIndex] = parent[node];
+      const edge = graph[previous][edgeIndex];
+      edge.capacity--;
+      graph[node][edge.reverse].capacity++;
+      node = previous;
+    }
+    flow++;
+  }
+  return flow === [...topicDemand.values()].reduce((sum, count) => sum + count, 0);
+}
+
 const previousTopics = await kvGet("topics");
 
 try {
@@ -47,6 +99,9 @@ try {
   console.log("═".repeat(76));
 
   for (const selectedTopics of scenarios) {
+    // Match the adaptive shipping generation size. Topic fairness is a full-
+    // generation contract; smaller prefixes are free to feel organic.
+    const windowSize = selectedTopics.length === 1 ? 60 : 36;
     await kvSet("topics", JSON.stringify(selectedTopics));
     const placeholders = selectedTopics.map(() => "?").join(", ");
     const pool = await db.getFirstAsync(
@@ -59,21 +114,39 @@ try {
       [MIN_TOPIC_RELEVANCE, ...selectedTopics]
     );
     const domainAvailability = await db.getAllAsync(
-      `SELECT COUNT(*) AS articles
+      `SELECT topic,
+              COALESCE(NULLIF(site_domain, ''), site_name) AS domain,
+              COUNT(*) AS articles
        FROM articles
        WHERE is_archived = 0 AND is_read = 0 AND word_count >= 250
          AND topic_relevance >= ? AND topic IN (${placeholders})
-       GROUP BY COALESCE(NULLIF(site_domain, ''), site_name)`,
+       GROUP BY topic, COALESCE(NULLIF(site_domain, ''), site_name)`,
       [MIN_TOPIC_RELEVANCE, ...selectedTopics]
     );
-    const evaluatedWindow = Math.min(WINDOW_SIZE, pool.articles);
+    const evaluatedWindow = Math.min(windowSize, pool.articles);
+    const topicAvailability = new Map(
+      selectedTopics.map((topic) => [
+        topic,
+        domainAvailability
+          .filter((row) => row.topic === topic)
+          .reduce((sum, row) => sum + row.articles, 0),
+      ]),
+    );
+    const topicDemand = new Map(selectedTopics.map((topic) => [topic, 0]));
+    for (let remaining = evaluatedWindow; remaining > 0;) {
+      let allocated = false;
+      for (const topic of selectedTopics) {
+        if (remaining === 0) break;
+        const current = topicDemand.get(topic) ?? 0;
+        if (current >= (topicAvailability.get(topic) ?? 0)) continue;
+        topicDemand.set(topic, current + 1);
+        remaining--;
+        allocated = true;
+      }
+      if (!allocated) break;
+    }
     let fairDomainCap = 0;
-    while (
-      domainAvailability.reduce(
-        (sum, domain) => sum + Math.min(domain.articles, fairDomainCap),
-        0
-      ) < evaluatedWindow
-    ) {
+    while (!canSupplyTopicsAtDomainCap(domainAvailability, topicDemand, fairDomainCap)) {
       fairDomainCap++;
     }
 
@@ -91,7 +164,7 @@ try {
     let sample = [];
 
     for (let session = 0; session < SESSION_COUNT; session++) {
-      const ids = (await loadDeque()).slice(0, WINDOW_SIZE);
+      const ids = (await loadDeque()).slice(0, windowSize);
       const headIds = ids.slice(0, HEAD_SIZE);
       if (headIds.length === HEAD_SIZE) complete++;
       if (headIds.length === 0) continue;
@@ -201,7 +274,7 @@ try {
       `  worst first-screen domains ${worstDistinctDomains} · worst top-domain share ${(worstTopDomainShare * 100).toFixed(1)}% · adjacent repeats ${adjacentDomainRepeats}/${visiblePairs}`
     );
     console.log(
-      `  worst publication count in first ${WINDOW_SIZE}: ${worstWindowDomainCount} · fair minimum ${fairDomainCap}`
+      `  worst publication count in first ${windowSize}: ${worstWindowDomainCount} · fair minimum ${fairDomainCap}`
     );
     console.log(
       `  worst repeated semantic ecosystem in first ${HEAD_SIZE}: ${worstSemanticClusterCount}`

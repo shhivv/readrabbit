@@ -31,6 +31,7 @@ const {
   selectEnrichmentCandidates,
   selectEntriesForSourceOrigin,
   siteNameForFeedEntry,
+  titleForEnrichedArticle,
 } = await import("../src/lib/crawler/engine");
 
 describe("direct Hacker News article discovery", () => {
@@ -220,6 +221,19 @@ describe("direct Hacker News article discovery", () => {
     expect(hnArticleScore(68, true)).toBeGreaterThan(hnArticleScore(68));
     expect(hnArticleScore(100_000, true)).toBeLessThanOrEqual(0.78);
     expect(hnArticleScore(0, true)).toBe(0.5);
+  });
+
+  test("keeps a curator headline when personal-site metadata is the author name", () => {
+    expect(
+      titleForEnrichedArticle(
+        null,
+        "Training AI to Paint with Code",
+        "Surya Narreddi"
+      )
+    ).toBe("Training AI to Paint with Code");
+    expect(
+      titleForEnrichedArticle(4, "Feed headline", "Canonical page headline")
+    ).toBe("Canonical page headline");
   });
 
   test("hard-caps direct ingestion even when called with an oversized batch", async () => {

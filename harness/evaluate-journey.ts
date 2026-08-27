@@ -463,7 +463,20 @@ try {
       if (
         previousTail.slice(-6).some((row) => row.voice === firstRefill.voice)
       ) {
-        fail(`${label} reset person diversity at top-up ${boundary}`);
+        const previousPositions = sequence
+          .slice(Math.max(0, boundary - 6), boundary)
+          .map((row, index) => ({ row, position: boundary - 6 + index + 1 }))
+          .filter(({ row }) => row.voice === firstRefill.voice)
+          .map(({ position }) => position)
+          .join(",");
+        fail(
+          `${label} reset person diversity at top-up ${boundary}: ` +
+            `${firstRefill.author || firstRefill.site_name} repeated from card ${previousPositions}; ` +
+            `tail was ${previousTail
+              .slice(-6)
+              .map((row) => row.author || row.site_name)
+              .join(" · ")}`,
+        );
       }
     }
   }

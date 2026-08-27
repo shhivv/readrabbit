@@ -207,6 +207,104 @@ function fairIdentityCap(
   return cap;
 }
 
+function maxDomainTopicSupply(
+  candidates: readonly RecommendationCandidate[],
+  domainCap: number,
+  topicDemand: ReadonlyMap<Topic, number>,
+): number {
+  const domains = [...new Set(candidates.map((candidate) => candidate.domain))];
+  const topics = [...topicDemand.keys()];
+  const domainIndex = new Map(domains.map((domain, index) => [domain, index]));
+  const topicIndex = new Map(topics.map((topic, index) => [topic, index]));
+  const pairCounts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const topic = topicIndex.get(candidate.topic);
+    if (topic == null) continue;
+    const pair = `${domainIndex.get(candidate.domain)}:${topic}`;
+    pairCounts.set(pair, (pairCounts.get(pair) ?? 0) + 1);
+  }
+
+  const source = 0;
+  const domainOffset = 1;
+  const topicOffset = domainOffset + domains.length;
+  const sink = topicOffset + topics.length;
+  const graph: { to: number; capacity: number; reverse: number }[][] =
+    Array.from({ length: sink + 1 }, () => []);
+  const addEdge = (from: number, to: number, capacity: number) => {
+    graph[from].push({ to, capacity, reverse: graph[to].length });
+    graph[to].push({ to: from, capacity: 0, reverse: graph[from].length - 1 });
+  };
+
+  domains.forEach((_, index) => addEdge(source, domainOffset + index, domainCap));
+  for (const [pair, capacity] of pairCounts) {
+    const [domain, topic] = pair.split(":").map(Number);
+    addEdge(domainOffset + domain, topicOffset + topic, capacity);
+  }
+  topics.forEach((topic, index) =>
+    addEdge(topicOffset + index, sink, topicDemand.get(topic) ?? 0),
+  );
+
+  let flow = 0;
+  for (;;) {
+    const parent: ([number, number] | null)[] = Array(sink + 1).fill(null);
+    const queue = [source];
+    for (
+      let cursor = 0;
+      cursor < queue.length && parent[sink] == null;
+      cursor++
+    ) {
+      const node = queue[cursor];
+      for (let edgeIndex = 0; edgeIndex < graph[node].length; edgeIndex++) {
+        const edge = graph[node][edgeIndex];
+        if (
+          edge.capacity <= 0 ||
+          edge.to === source ||
+          parent[edge.to] != null
+        ) {
+          continue;
+        }
+        parent[edge.to] = [node, edgeIndex];
+        queue.push(edge.to);
+      }
+    }
+    if (parent[sink] == null) break;
+
+    for (let node = sink; node !== source;) {
+      const [previous, edgeIndex] = parent[node]!;
+      const edge = graph[previous][edgeIndex];
+      edge.capacity--;
+      graph[node][edge.reverse].capacity++;
+      node = previous;
+    }
+    flow++;
+  }
+  return flow;
+}
+
+function fairTopicAwareDomainCap(
+  candidates: readonly RecommendationCandidate[],
+  topicDemand: ReadonlyMap<Topic, number>,
+): number {
+  const required = [...topicDemand.values()].reduce(
+    (sum, count) => sum + count,
+    0,
+  );
+  // The topic-agnostic cap is a lower bound, so start there instead of
+  // rebuilding the flow graph for impossible smaller caps.
+  let cap = fairIdentityCap(
+    candidates,
+    required,
+    (candidate) => candidate.domain,
+  );
+  while (
+    cap < required &&
+    maxDomainTopicSupply(candidates, cap, topicDemand) < required
+  ) {
+    cap++;
+  }
+  return cap;
+}
+
 function maxVoiceDomainSupply(
   candidates: readonly RecommendationCandidate[],
   voiceCap: number,
@@ -321,10 +419,9 @@ function diversityTier(
   const lastDomain = candidate.domain
     ? state.lastDomain.get(candidate.domain)
     : undefined;
-  const spaced =
-    (lastVoice == null || position - lastVoice >= 6) &&
-    (lastDomain == null || position - lastDomain >= 4);
   const adjacent = lastVoice === position - 1 || lastDomain === position - 1;
+  const voiceTooRecent = lastVoice != null && position - lastVoice < 7;
+  const domainTooRecent = lastDomain != null && position - lastDomain < 4;
   const lastSemanticCluster = candidate.semanticCluster
     ? state.lastSemanticCluster.get(candidate.semanticCluster)
     : undefined;
@@ -353,9 +450,13 @@ function diversityTier(
   const aboveFairVoiceShare = voiceCount >= state.voiceCap;
   return (
     novelty * 2 +
-    (spaced ? 0 : 1) +
+    // Recent repetition is more noticeable than exceeding an eventual fair
+    // share by one card. This is especially important at refill boundaries,
+    // where the same person on a new domain must not look "novel" again.
+    (voiceTooRecent ? 4_000 : 0) +
+    (domainTooRecent ? 3_000 : 0) +
     (semanticRepeat ? state.semanticRepeatPenalty : 0) +
-    (adjacent ? 100 : 0) +
+    (adjacent ? 10_000 : 0) +
     (aboveFairDomainShare ? 2_000 : 0) +
     (aboveFairVoiceShare ? 1_000 : 0)
   );
@@ -652,14 +753,22 @@ function buildDiverseSlateInternal<T extends RecommendationCandidate>(
   const appendedFairnessHorizon = priorCandidates.length
     ? Math.max(12, Math.ceil((Math.max(0, limit) * 2) / 3))
     : Math.max(0, limit);
-  const capWindow =
-    priorCandidates.length +
-    Math.min(appendedFairnessHorizon, remaining.length);
-  const domainCap = fairIdentityCap(
-    capCandidates,
-    capWindow,
-    (candidate) => candidate.domain,
+  const capTopicDemand = allocateTopicQuotas(
+    selectedTopics,
+    remaining,
+    Math.min(appendedFairnessHorizon, remaining.length),
   );
+  for (const candidate of priorCandidates) {
+    capTopicDemand.set(
+      candidate.topic,
+      (capTopicDemand.get(candidate.topic) ?? 0) + 1,
+    );
+  }
+  const capWindow = [...capTopicDemand.values()].reduce(
+    (sum, count) => sum + count,
+    0,
+  );
+  const domainCap = fairTopicAwareDomainCap(capCandidates, capTopicDemand);
   const voiceCap = priorCandidates.length
     ? fairJointVoiceCap(capCandidates, capWindow, domainCap)
     : Number.POSITIVE_INFINITY;
@@ -676,11 +785,11 @@ function buildDiverseSlateInternal<T extends RecommendationCandidate>(
     lastAuthor: new Map(),
     lastDomain: new Map(),
     lastSemanticCluster: new Map(),
-    // The initial opening still prefers a new publication over a repeated
-    // ecosystem when those goals conflict. Once a prior reading context
-    // exists, theme spacing wins over a harmless, non-adjacent identity
-    // repeat so refills cannot bunch the same ecosystem at their tail.
-    semanticRepeatPenalty: priorCandidates.length > 0 ? 10 : 1,
+    // Theme spacing wins over a harmless, well-spaced identity repeat. This
+    // matters after the first few screens, when unique authors from one large
+    // ecosystem (notably Python) would otherwise look novel individually and
+    // bunch together despite being the same subject experience.
+    semanticRepeatPenalty: 10,
     topicBreadthByCandidate: new Map(
       remaining.map((candidate) => [
         candidate.id,

@@ -17,14 +17,15 @@ import { inferSemanticCluster } from "./semantic-cluster";
 // a balanced mix of the topics they explicitly selected.
 
 const MIN_WORDS = 250;
-// Three visible screens are enough runway for instant navigation. Top-ups are
-// local SQLite reads, so precomputing 60 cards only adds ranking work and
-// memory without improving perceived responsiveness.
-const WINDOW_SIZE = 36;
+// A single narrow topic needs a full long-session runway: a 36-card math
+// window exhausted every one-off writer, then refilled from only prolific
+// writers left in the same finite pool. Mixed topics have ample identities,
+// so retaining the smaller generation keeps their local ranking work flat.
+const SINGLE_TOPIC_WINDOW_SIZE = 60;
+const MULTI_TOPIC_WINDOW_SIZE = 36;
 // Consider ten screens, identity-round-robin, before the JS slate pass. This
 // is wide enough for the long tail without letting a prolific publication's
 // hundreds of posts crowd those writers out before diversity rules run.
-const CANDIDATE_POOL_SIZE = WINDOW_SIZE * 10;
 // One or two cards of memory only prevent adjacency. A full reading-session
 // tail prevents generation N+1 from rediscovering the same prolific people
 // that generation N already used, while remaining a tiny SQLite lookup.
@@ -170,15 +171,20 @@ async function buildDequeWindow(
   excludedIds: readonly number[] = [],
 ): Promise<CandidateRow[]> {
   const db = await getDb();
+  const windowSize =
+    selectedTopics.length === 1
+      ? SINGLE_TOPIC_WINDOW_SIZE
+      : MULTI_TOPIC_WINDOW_SIZE;
+  const candidatePoolSize = windowSize * 10;
   const rows = (
     await db.getAllAsync<CandidateQueryRow>(
       weightedCandidateQuery(selectedTopics.length),
-      [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE],
+      [MIN_TOPIC_RELEVANCE, ...selectedTopics, candidatePoolSize],
     )
   ).map(withSemanticCluster);
   const excluded = new Set(excludedIds);
   const rowsById = new Map(rows.map((row) => [row.id, row]));
-  const minimumPerTopic = Math.floor(WINDOW_SIZE / selectedTopics.length);
+  const minimumPerTopic = Math.floor(windowSize / selectedTopics.length);
 
   // The broad query is the fast path. Only rescue a topic separately when a
   // much larger pool crowded it below its batch share (or queued IDs consumed
@@ -192,7 +198,7 @@ async function buildDequeWindow(
     const rescueRows = (
       await db.getAllAsync<CandidateQueryRow>(
         weightedCandidateQuery(1),
-        [MIN_TOPIC_RELEVANCE, topic, CANDIDATE_POOL_SIZE],
+        [MIN_TOPIC_RELEVANCE, topic, candidatePoolSize],
       )
     ).map(withSemanticCluster);
     for (const row of rescueRows) rowsById.set(row.id, row);
@@ -216,7 +222,7 @@ async function buildDequeWindow(
       : [];
   return buildDiverseSlate(
     exposureAdjusted,
-    WINDOW_SIZE,
+    windowSize,
     selectedTopics,
     priorCandidates,
   );

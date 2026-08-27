@@ -267,6 +267,36 @@ describe("recommendation slate diversity", () => {
     expect(slate.map((row) => row.id)).toEqual([2, 3]);
   });
 
+  test("computes publication fairness within each topic's required share", () => {
+    const rows = [
+      ...Array.from({ length: 8 }, (_, index) =>
+        candidate(
+          index + 1,
+          `tech-${index}.example`,
+          `tech-${index}`,
+          "technology"
+        )
+      ),
+      ...Array.from({ length: 4 }, (_, index) =>
+        candidate(
+          100 + index,
+          `math-${index % 2}.example`,
+          `math-${index}`,
+          "math"
+        )
+      ),
+    ];
+    const slate = buildDiverseSlate(rows, 8, ["technology", "math"]);
+    const domainCounts = new Map<string, number>();
+    for (const row of slate) {
+      domainCounts.set(row.domain, (domainCounts.get(row.domain) ?? 0) + 1);
+    }
+
+    expect(slate.filter((row) => row.topic === "technology")).toHaveLength(4);
+    expect(slate.filter((row) => row.topic === "math")).toHaveLength(4);
+    expect(Math.max(...domainCounts.values())).toBe(2);
+  });
+
   test("reserves a cross-topic voice for the topic with less exclusive supply", () => {
     const rows = [
       candidate(1, "shared-tech.example", "shared-writer", "technology"),
@@ -317,6 +347,27 @@ describe("recommendation slate diversity", () => {
 
     const slate = buildDiverseSlate(rows, 4, ["economics"], prior);
     expect(slate.map((row) => row.id)).toEqual([100, 101, 102, 103]);
+  });
+
+  test("keeps a recent person cooled even when they appear on a fresh domain", () => {
+    const prior = [
+      candidate(900, "older.example", "older-writer"),
+      ...Array.from({ length: 5 }, (_, index) =>
+        candidate(
+          910 + index,
+          `middle-${index}.example`,
+          `middle-${index}`
+        )
+      ),
+      candidate(920, "recent.example", "recent-writer"),
+    ];
+    const rows = [
+      candidate(1, "brand-new.example", "recent-writer"),
+      candidate(2, "older.example", "older-writer"),
+    ];
+
+    const slate = buildDiverseSlate(rows, 1, ["economics"], prior);
+    expect(slate.map((row) => row.id)).toEqual([2]);
   });
 
   test("waits for a varied, topic-balanced first-run opening", () => {

@@ -256,6 +256,20 @@ export function hnArticleScore(points: number, isFrontPage = false): number {
   );
 }
 
+export function titleForEnrichedArticle(
+  sourceId: number | null,
+  discoveredTitle: string,
+  extractedTitle: string
+): string {
+  const discovered = discoveredTitle.trim();
+  const extracted = extractedTitle.trim();
+  // Community curators give us the article headline before extraction. Some
+  // minimalist personal sites expose the author's name as their page-level
+  // metadata, so replacing a known direct-link title silently ruins the card.
+  if (sourceId == null && discovered) return discovered;
+  return extracted || discovered;
+}
+
 export async function ingestSmallWebStories(
   stories: readonly SmallWebStory[],
   persist: ArticleMetaWriter = upsertArticleMeta
@@ -669,18 +683,26 @@ async function enrichArticles(
             tick();
             return;
           }
-          const { quality } = scoreArticleQuality(extracted);
-          const topic = assessTopic(extracted, asTopic(article.topic));
+          const enriched = {
+            ...extracted,
+            title: titleForEnrichedArticle(
+              article.source_id,
+              article.title,
+              extracted.title
+            ),
+          };
+          const { quality } = scoreArticleQuality(enriched);
+          const topic = assessTopic(enriched, asTopic(article.topic));
           await setArticleContent(article.id, {
-            title: extracted.title,
-            author: extracted.author,
-            siteName: extracted.siteName,
-            publishedDate: extracted.publishedDate,
-            excerpt: extracted.excerpt,
-            contentHtml: extracted.contentHtml,
-            textContent: extracted.textContent,
-            leadImageUrl: extracted.leadImageUrl,
-            wordCount: extracted.wordCount,
+            title: enriched.title,
+            author: enriched.author,
+            siteName: enriched.siteName,
+            publishedDate: enriched.publishedDate,
+            excerpt: enriched.excerpt,
+            contentHtml: enriched.contentHtml,
+            textContent: enriched.textContent,
+            leadImageUrl: enriched.leadImageUrl,
+            wordCount: enriched.wordCount,
             quality,
             topic: topic.topic,
             topicRelevance: topic.relevance,
