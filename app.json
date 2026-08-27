@@ -3,7 +3,7 @@
     "name": "ReadRabbit",
     "slug": "readrabbit",
     "githubUrl": "https://github.com/shhivv/readrabbit",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "readrabbit",
@@ -14,7 +14,7 @@
     },
     "android": {
       "package": "com.readrabbit.app",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#151515",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
