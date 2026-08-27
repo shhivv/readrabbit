@@ -176,6 +176,7 @@ function canSupplyVoiceDomainAtCaps(availability, demand, voiceCap, domainCap) {
 try {
   const { getDb, kvSet, markRead } = await import("../src/lib/db");
   const { loadDeque, topUpDeque, LOW_WATER } = await import("../src/lib/deque");
+  const { inferSemanticCluster } = await import("../src/lib/semantic-cluster");
   const db = await getDb();
   const scenarios = [
     ["economics"],
@@ -252,15 +253,28 @@ try {
       const id = deque[index];
       if (id == null) fail(`${topics.join("+")} ran dry at card ${index + 1}`);
       const row = await db.getFirstAsync(
-        `SELECT id, title, author, author_key, site_name, topic,
-                COALESCE(NULLIF(site_domain, ''), 'article:' || id) AS domain
-         FROM articles WHERE id = ?`,
+        `SELECT article.id, article.title, article.author,
+                article.author_key, article.site_name, article.site_domain,
+                article.topic, source.name AS source_name,
+                source.origin AS source_origin,
+                COALESCE(NULLIF(article.site_domain, ''),
+                         'article:' || article.id) AS domain
+         FROM articles AS article
+         LEFT JOIN sources AS source ON source.id = article.source_id
+         WHERE article.id = ?`,
         [id],
       );
       if (!row) fail(`missing selected article ${id}`);
       sequence.push({
         ...row,
         voice: row.author_key || `site:${row.domain}`,
+        semanticCluster: inferSemanticCluster({
+          topic: row.topic,
+          title: row.title,
+          siteDomain: row.site_domain,
+          sourceName: row.source_name ?? "",
+          sourceOrigin: row.source_origin ?? "",
+        }),
       });
       await markRead(id);
 
@@ -274,6 +288,8 @@ try {
     const voiceCounts = new Map();
     const domainCounts = new Map();
     const lastDomainPosition = new Map();
+    const lastSemanticClusterPosition = new Map();
+    const semanticClusterViolations = [];
     let minimumDomainGap = Number.POSITIVE_INFINITY;
     const topicCounts = new Map(topics.map((topic) => [topic, 0]));
     let firstVoiceRepeat = null;
@@ -294,6 +310,22 @@ try {
         );
       }
       if (index < 36) lastDomainPosition.set(row.domain, index);
+      if (row.semanticCluster) {
+        const previousClusterPosition = lastSemanticClusterPosition.get(
+          row.semanticCluster,
+        );
+        if (
+          previousClusterPosition != null &&
+          index - previousClusterPosition < 12
+        ) {
+          semanticClusterViolations.push({
+            cluster: row.semanticCluster,
+            previous: previousClusterPosition + 1,
+            current: index + 1,
+          });
+        }
+        lastSemanticClusterPosition.set(row.semanticCluster, index);
+      }
       topicCounts.set(row.topic, (topicCounts.get(row.topic) ?? 0) + 1);
     }
 
@@ -357,6 +389,14 @@ try {
         .map(([voice, count]) => `${voice}(${count})`)
         .join(" · ")}`,
     );
+    const clusteredPositions = sequence
+      .map((row, index) =>
+        row.semanticCluster ? `${row.semanticCluster}@${index + 1}` : null,
+      )
+      .filter(Boolean);
+    if (clusteredPositions.length > 0) {
+      console.log(`  semantic ecosystems: ${clusteredPositions.join(" · ")}`);
+    }
     if (maxVoiceCount > allowedVoiceCap) {
       const offenders = [...voiceCounts.entries()]
         .filter(([, count]) => count === maxVoiceCount)
@@ -409,6 +449,12 @@ try {
       Math.max(...topicCounts.values()) - Math.min(...topicCounts.values()) > 2
     ) {
       fail(`${label} did not keep its generated topic shares even`);
+    }
+    if (semanticClusterViolations.length > 0) {
+      const violation = semanticClusterViolations[0];
+      fail(
+        `${label} repeated ${violation.cluster} at cards ${violation.previous} and ${violation.current}`,
+      );
     }
     for (const boundary of topUpBoundaries) {
       const previousTail = sequence.slice(Math.max(0, boundary - 12), boundary);

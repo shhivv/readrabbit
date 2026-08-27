@@ -5,6 +5,7 @@ export interface RecommendationCandidate {
   topic: Topic;
   authorKey: string;
   domain: string;
+  semanticCluster?: string;
 }
 
 export interface PersistentExposureCandidate extends RecommendationCandidate {
@@ -108,6 +109,8 @@ interface SelectionState {
   voiceCap: number;
   lastAuthor: Map<string, number>;
   lastDomain: Map<string, number>;
+  lastSemanticCluster: Map<string, number>;
+  semanticRepeatPenalty: number;
   topicBreadthByCandidate: Map<number, number>;
   topicBreadthByDomain: Map<string, number>;
 }
@@ -322,6 +325,15 @@ function diversityTier(
     (lastVoice == null || position - lastVoice >= 6) &&
     (lastDomain == null || position - lastDomain >= 4);
   const adjacent = lastVoice === position - 1 || lastDomain === position - 1;
+  const lastSemanticCluster = candidate.semanticCluster
+    ? state.lastSemanticCluster.get(candidate.semanticCluster)
+    : undefined;
+  // One ecosystem may arrive through many aggregators, authors, and domains.
+  // Treat a second appearance within one visible screen as less novel, while
+  // keeping it a soft preference so a narrow/offline library can still fill.
+  // A one-point tier is intentionally weaker than repeating a publication.
+  const semanticRepeat =
+    lastSemanticCluster != null && position - lastSemanticCluster < 12;
   const novelty =
     voiceCount === 0 && domainCount === 0
       ? 0
@@ -342,6 +354,7 @@ function diversityTier(
   return (
     novelty * 2 +
     (spaced ? 0 : 1) +
+    (semanticRepeat ? state.semanticRepeatPenalty : 0) +
     (adjacent ? 100 : 0) +
     (aboveFairDomainShare ? 2_000 : 0) +
     (aboveFairVoiceShare ? 1_000 : 0)
@@ -482,6 +495,7 @@ function repairFairShare<T extends RecommendationCandidate>(
   const alternatives = unused.slice();
   const voiceCounts = new Map<string, number>();
   const domainCounts = new Map<string, number>();
+  const semanticClusterCounts = new Map<string, number>();
   const add = (candidate: RecommendationCandidate, amount: 1 | -1) => {
     const voice = voiceKey(candidate);
     voiceCounts.set(voice, (voiceCounts.get(voice) ?? 0) + amount);
@@ -489,6 +503,12 @@ function repairFairShare<T extends RecommendationCandidate>(
       candidate.domain,
       (domainCounts.get(candidate.domain) ?? 0) + amount,
     );
+    if (candidate.semanticCluster) {
+      semanticClusterCounts.set(
+        candidate.semanticCluster,
+        (semanticClusterCounts.get(candidate.semanticCluster) ?? 0) + amount,
+      );
+    }
   };
   for (const candidate of priorCandidates) add(candidate, 1);
   for (const candidate of slate) add(candidate, 1);
@@ -512,13 +532,29 @@ function repairFairShare<T extends RecommendationCandidate>(
       if (!voiceOverflow && !domainOverflow) continue;
 
       add(current, -1);
-      const alternativeIndex = alternatives.findIndex((candidate) => {
-        if (candidate.topic !== current.topic) return false;
-        return (
-          (voiceCounts.get(voiceKey(candidate)) ?? 0) < voiceCap &&
-          (domainCounts.get(candidate.domain) ?? 0) < domainCap
-        );
-      });
+      let alternativeIndex = -1;
+      let bestSemanticCount = Number.POSITIVE_INFINITY;
+      for (let index = 0; index < alternatives.length; index++) {
+        const candidate = alternatives[index];
+        if (
+          candidate.topic !== current.topic ||
+          (voiceCounts.get(voiceKey(candidate)) ?? 0) >= voiceCap ||
+          (domainCounts.get(candidate.domain) ?? 0) >= domainCap
+        ) {
+          continue;
+        }
+        // Repairs exist to fix an author/publication cap after the greedy
+        // pass. Among equally valid swaps, never recreate the original bug by
+        // pulling from an ecosystem that is already common in the window.
+        const semanticCount = candidate.semanticCluster
+          ? (semanticClusterCounts.get(candidate.semanticCluster) ?? 0)
+          : 0;
+        if (semanticCount < bestSemanticCount) {
+          alternativeIndex = index;
+          bestSemanticCount = semanticCount;
+          if (semanticCount === 0) break;
+        }
+      }
       if (alternativeIndex < 0) {
         add(current, 1);
         continue;
@@ -533,6 +569,54 @@ function repairFairShare<T extends RecommendationCandidate>(
       break;
     }
     if (!repaired) break;
+  }
+
+  // Identity-cap repair can otherwise exchange a varied article for another
+  // domain from an already-heavy ecosystem. Keep enough clustered cards for
+  // one appearance per 12-card screen, and replace only the excess when a
+  // same-topic, identity-feasible alternative exists. The subsequent ordering
+  // pass handles exact rolling spacing; this pass merely makes that ordering
+  // feasible without weakening author/publication caps.
+  const semanticCap = Math.max(
+    1,
+    Math.ceil((priorCandidates.length + slate.length) / 12),
+  );
+  for (let selectedIndex = slate.length - 1; selectedIndex >= 0; selectedIndex--) {
+    const current = slate[selectedIndex];
+    if (
+      !current.semanticCluster ||
+      (semanticClusterCounts.get(current.semanticCluster) ?? 0) <= semanticCap
+    ) {
+      continue;
+    }
+
+    add(current, -1);
+    let alternativeIndex = -1;
+    for (let index = 0; index < alternatives.length; index++) {
+      const candidate = alternatives[index];
+      if (
+        candidate.topic !== current.topic ||
+        (voiceCounts.get(voiceKey(candidate)) ?? 0) >= voiceCap ||
+        (domainCounts.get(candidate.domain) ?? 0) >= domainCap ||
+        (candidate.semanticCluster &&
+          (semanticClusterCounts.get(candidate.semanticCluster) ?? 0) >=
+            semanticCap)
+      ) {
+        continue;
+      }
+      alternativeIndex = index;
+      if (!candidate.semanticCluster) break;
+    }
+    if (alternativeIndex < 0) {
+      add(current, 1);
+      continue;
+    }
+
+    const [replacement] = alternatives.splice(alternativeIndex, 1);
+    alternatives.push(current);
+    slate[selectedIndex] = replacement;
+    add(replacement, 1);
+    changed = true;
   }
 
   return { slate, changed };
@@ -591,6 +675,12 @@ function buildDiverseSlateInternal<T extends RecommendationCandidate>(
     voiceCap,
     lastAuthor: new Map(),
     lastDomain: new Map(),
+    lastSemanticCluster: new Map(),
+    // The initial opening still prefers a new publication over a repeated
+    // ecosystem when those goals conflict. Once a prior reading context
+    // exists, theme spacing wins over a harmless, non-adjacent identity
+    // repeat so refills cannot bunch the same ecosystem at their tail.
+    semanticRepeatPenalty: priorCandidates.length > 0 ? 10 : 1,
     topicBreadthByCandidate: new Map(
       remaining.map((candidate) => [
         candidate.id,
@@ -622,6 +712,9 @@ function buildDiverseSlateInternal<T extends RecommendationCandidate>(
       );
       state.lastDomain.set(candidate.domain, position);
     }
+    if (candidate.semanticCluster) {
+      state.lastSemanticCluster.set(candidate.semanticCluster, position);
+    }
     if (state.rollingTopicCounts.has(candidate.topic)) {
       state.rollingTopicCounts.set(
         candidate.topic,
@@ -650,6 +743,9 @@ function buildDiverseSlateInternal<T extends RecommendationCandidate>(
         countFor(state.domainCounts, picked.domain) + 1,
       );
       state.lastDomain.set(picked.domain, position);
+    }
+    if (picked.semanticCluster) {
+      state.lastSemanticCluster.set(picked.semanticCluster, position);
     }
     state.topicCounts.set(
       picked.topic,

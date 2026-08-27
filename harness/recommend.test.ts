@@ -57,6 +57,104 @@ describe("recommendation slate diversity", () => {
     expect(slate.filter((row) => row.authorKey === "same-author")).toHaveLength(1);
   });
 
+  test("spaces one ecosystem across otherwise diverse publications", () => {
+    const python = Array.from({ length: 18 }, (_, index) => ({
+      ...candidate(
+        index + 1,
+        `python-${index}.example`,
+        `python-author-${index}`,
+        "technology",
+      ),
+      semanticCluster: "technology:python",
+    }));
+    const otherTechnology = Array.from({ length: 40 }, (_, index) =>
+      candidate(
+        100 + index,
+        `other-${index}.example`,
+        `other-author-${index}`,
+        "technology",
+      ),
+    );
+
+    const slate = buildDiverseSlate(
+      [...python, ...otherTechnology],
+      36,
+      ["technology"],
+    );
+    for (let start = 0; start <= slate.length - 12; start++) {
+      expect(
+        slate
+          .slice(start, start + 12)
+          .filter((row) => row.semanticCluster === "technology:python"),
+      ).toHaveLength(1);
+    }
+  });
+
+  test("keeps semantic spacing soft when no alternative supply exists", () => {
+    const pythonOnly = Array.from({ length: 12 }, (_, index) => ({
+      ...candidate(
+        index + 1,
+        `python-${index}.example`,
+        `python-author-${index}`,
+        "technology",
+      ),
+      semanticCluster: "technology:python",
+    }));
+
+    expect(
+      buildDiverseSlate(pythonOnly, 12, ["technology"]),
+    ).toHaveLength(12);
+  });
+
+  test("keeps ecosystem spacing continuous across a refill boundary", () => {
+    const prior = Array.from({ length: 36 }, (_, index) => ({
+      ...candidate(
+        500 + index,
+        `prior-${index}.example`,
+        `prior-author-${index}`,
+        "technology",
+      ),
+      semanticCluster:
+        index === 0 || index === 12 || index === 24
+          ? "technology:python"
+          : "",
+    }));
+    const candidates = [
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...candidate(
+          index + 1,
+          `python-${index}.example`,
+          `python-author-${index}`,
+          "technology",
+        ),
+        semanticCluster: "technology:python",
+      })),
+      ...Array.from({ length: 40 }, (_, index) =>
+        candidate(
+          100 + index,
+          `other-${index}.example`,
+          `other-author-${index}`,
+          "technology",
+        ),
+      ),
+    ];
+
+    const refill = buildDiverseSlate(
+      candidates,
+      36,
+      ["technology"],
+      prior,
+    );
+    const stream = [...prior, ...refill];
+    for (let start = 24; start <= stream.length - 12; start++) {
+      expect(
+        stream
+          .slice(start, start + 12)
+          .filter((row) => row.semanticCluster === "technology:python"),
+      ).toHaveLength(1);
+    }
+  });
+
   test("limits a prolific publication to two cards when the pool supports it", () => {
     const rows = Array.from({ length: 20 }, (_, domain) =>
       Array.from({ length: 3 }, (_, article) =>

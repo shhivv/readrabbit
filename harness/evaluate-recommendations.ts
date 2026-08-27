@@ -19,6 +19,7 @@ const { loadDeque } = await import("../src/lib/deque");
 const { MIN_TOPIC_RELEVANCE } = await import("../src/lib/crawler/topic");
 const { getArticleAttribution } = await import("../src/lib/attribution");
 const { isLowValueRoundup } = await import("../src/lib/crawler/editorial");
+const { inferSemanticCluster } = await import("../src/lib/semantic-cluster");
 const db = await getDb();
 
 const SESSION_COUNT = Number.parseInt(process.env.SESSIONS ?? "250", 10);
@@ -86,6 +87,7 @@ try {
     let topicImbalance = 0;
     const generatedMixes = new Set();
     let worstWindowDomainCount = 0;
+    let worstSemanticClusterCount = 0;
     let sample = [];
 
     for (let session = 0; session < SESSION_COUNT; session++) {
@@ -95,9 +97,14 @@ try {
       if (headIds.length === 0) continue;
 
       const rows = await db.getAllAsync(
-        `SELECT id, title, topic, topic_relevance, site_domain, author_key,
-                author, site_name
-         FROM articles WHERE id IN (${ids.map(() => "?").join(", ")})`,
+        `SELECT article.id, article.title, article.topic,
+                article.topic_relevance, article.site_domain,
+                article.author_key, article.author, article.site_name,
+                source.name AS source_name,
+                source.origin AS source_origin
+         FROM articles AS article
+         LEFT JOIN sources AS source ON source.id = article.source_id
+         WHERE article.id IN (${ids.map(() => "?").join(", ")})`,
         ids
       );
       const byId = new Map(rows.map((row) => [row.id, row]));
@@ -129,6 +136,26 @@ try {
       worstWindowDomainCount = Math.max(
         worstWindowDomainCount,
         ...windowCounts.values()
+      );
+      const semanticClusterCounts = new Map();
+      for (const row of head) {
+        const cluster = inferSemanticCluster({
+          topic: row.topic,
+          title: row.title,
+          siteDomain: row.site_domain,
+          sourceName: row.source_name ?? "",
+          sourceOrigin: row.source_origin ?? "",
+        });
+        if (!cluster) continue;
+        semanticClusterCounts.set(
+          cluster,
+          (semanticClusterCounts.get(cluster) ?? 0) + 1,
+        );
+      }
+      worstSemanticClusterCount = Math.max(
+        worstSemanticClusterCount,
+        0,
+        ...semanticClusterCounts.values(),
       );
 
       for (let index = 1; index < domains.length; index++) {
@@ -176,6 +203,9 @@ try {
     console.log(
       `  worst publication count in first ${WINDOW_SIZE}: ${worstWindowDomainCount} · fair minimum ${fairDomainCap}`
     );
+    console.log(
+      `  worst repeated semantic ecosystem in first ${HEAD_SIZE}: ${worstSemanticClusterCount}`
+    );
     console.log(`  generated mix: ${[...generatedMixes].join(" / ")}`);
     console.log("  sample:");
     for (const row of sample) {
@@ -199,6 +229,9 @@ try {
     }
     if (worstWindowDomainCount > fairDomainCap) {
       fail(`${label} exceeded the fairest achievable publication cap of ${fairDomainCap}`);
+    }
+    if (worstSemanticClusterCount > 1) {
+      fail(`${label} repeated one semantic ecosystem within the first screen`);
     }
   }
 

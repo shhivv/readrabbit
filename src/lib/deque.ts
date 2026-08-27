@@ -8,6 +8,7 @@ import {
   type RecommendationCandidate,
   type PersistentExposureCandidate,
 } from "./recommend";
+import { inferSemanticCluster } from "./semantic-cluster";
 
 // The deque: an ordered stream of article ids backed entirely by SQLite.
 // SQLite produces a generously sized, relevance-weighted candidate pool.
@@ -47,7 +48,29 @@ export interface DequeState {
   ids: number[];
 }
 
-type CandidateRow = PersistentExposureCandidate;
+type CandidateQueryRow = PersistentExposureCandidate & {
+  title: string;
+  siteName: string;
+  sourceName: string | null;
+  sourceOrigin: string | null;
+};
+
+type CandidateRow = CandidateQueryRow & {
+  semanticCluster: string;
+};
+
+function withSemanticCluster(row: CandidateQueryRow): CandidateRow {
+  return {
+    ...row,
+    semanticCluster: inferSemanticCluster({
+      topic: row.topic,
+      title: row.title,
+      siteDomain: row.domain,
+      sourceName: row.sourceName ?? "",
+      sourceOrigin: row.sourceOrigin ?? "",
+    }),
+  };
+}
 
 function weightedCandidateQuery(topicCount: number): string {
   const ageDays = `(strftime('%s','now') * 1000 - COALESCE(a.published_date, a.fetched_at)) / 86400000.0`;
@@ -66,6 +89,10 @@ function weightedCandidateQuery(topicCount: number): string {
     WITH eligible AS MATERIALIZED (
       SELECT a.id,
              a.topic,
+             a.title,
+             a.site_name AS siteName,
+             source.name AS sourceName,
+             source.origin AS sourceOrigin,
              a.author_key AS authorKey,
              ${domain} AS domain,
              ${voice} AS voice_key,
@@ -75,6 +102,7 @@ function weightedCandidateQuery(topicCount: number): string {
              COALESCE(domain_exposure.exposure_count, 0) AS domainExposureCount,
              domain_exposure.last_exposed_at AS domainLastExposedAt
       FROM articles AS a
+      LEFT JOIN sources AS source ON source.id = a.source_id
       LEFT JOIN identity_exposures AS author_exposure
         ON author_exposure.identity_kind = 'author'
        AND author_exposure.identity_key = a.author_key
@@ -101,7 +129,8 @@ function weightedCandidateQuery(topicCount: number): string {
              ) AS rank_in_domain
       FROM eligible
     )
-    SELECT id, topic, authorKey, domain,
+    SELECT id, topic, title, siteName, sourceName, sourceOrigin,
+           authorKey, domain,
            authorExposureCount, authorLastExposedAt,
            domainExposureCount, domainLastExposedAt
     FROM identity_ranked
@@ -141,10 +170,12 @@ async function buildDequeWindow(
   excludedIds: readonly number[] = [],
 ): Promise<CandidateRow[]> {
   const db = await getDb();
-  const rows = await db.getAllAsync<CandidateRow>(
-    weightedCandidateQuery(selectedTopics.length),
-    [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE],
-  );
+  const rows = (
+    await db.getAllAsync<CandidateQueryRow>(
+      weightedCandidateQuery(selectedTopics.length),
+      [MIN_TOPIC_RELEVANCE, ...selectedTopics, CANDIDATE_POOL_SIZE],
+    )
+  ).map(withSemanticCluster);
   const excluded = new Set(excludedIds);
   const rowsById = new Map(rows.map((row) => [row.id, row]));
   const minimumPerTopic = Math.floor(WINDOW_SIZE / selectedTopics.length);
@@ -158,10 +189,12 @@ async function buildDequeWindow(
     ).length;
     if (available >= minimumPerTopic) continue;
 
-    const rescueRows = await db.getAllAsync<CandidateRow>(
-      weightedCandidateQuery(1),
-      [MIN_TOPIC_RELEVANCE, topic, CANDIDATE_POOL_SIZE],
-    );
+    const rescueRows = (
+      await db.getAllAsync<CandidateQueryRow>(
+        weightedCandidateQuery(1),
+        [MIN_TOPIC_RELEVANCE, topic, CANDIDATE_POOL_SIZE],
+      )
+    ).map(withSemanticCluster);
     for (const row of rescueRows) rowsById.set(row.id, row);
   }
 
@@ -194,34 +227,44 @@ async function loadDiversityContext(
   queuedIds: readonly number[],
 ): Promise<RecommendationCandidate[]> {
   const domain =
-    `COALESCE(NULLIF(site_domain, ''), ` +
-    `CASE WHEN source_id IS NOT NULL THEN 'source:' || source_id ` +
-    `ELSE 'article:' || id END)`;
+    `COALESCE(NULLIF(a.site_domain, ''), ` +
+    `CASE WHEN a.source_id IS NOT NULL THEN 'source:' || a.source_id ` +
+    `ELSE 'article:' || a.id END)`;
   const contextIds = queuedIds.slice(-DIVERSITY_CONTEXT_SIZE);
 
   if (contextIds.length > 0) {
-    const rows = await db.getAllAsync<RecommendationCandidate>(
-      `SELECT id, topic, author_key AS authorKey, ${domain} AS domain
-       FROM articles
-       WHERE id IN (${contextIds.map(() => "?").join(", ")})`,
+    const rows = await db.getAllAsync<CandidateQueryRow>(
+      `SELECT a.id, a.topic, a.title, a.site_name AS siteName,
+              source.name AS sourceName, source.origin AS sourceOrigin,
+              a.author_key AS authorKey, ${domain} AS domain,
+              0 AS authorExposureCount, NULL AS authorLastExposedAt,
+              0 AS domainExposureCount, NULL AS domainLastExposedAt
+       FROM articles AS a
+       LEFT JOIN sources AS source ON source.id = a.source_id
+       WHERE a.id IN (${contextIds.map(() => "?").join(", ")})`,
       contextIds,
     );
-    const byId = new Map(rows.map((row) => [row.id, row]));
+    const byId = new Map(rows.map(withSemanticCluster).map((row) => [row.id, row]));
     return contextIds
       .map((id) => byId.get(id))
-      .filter((row): row is RecommendationCandidate => row != null);
+      .filter((row): row is CandidateRow => row != null);
   }
 
-  const recent = await db.getAllAsync<RecommendationCandidate>(
-    `SELECT id, topic, author_key AS authorKey, ${domain} AS domain
-     FROM articles
-     WHERE is_read = 1 AND read_at IS NOT NULL
-       AND topic IN ('technology', 'economics', 'math')
-     ORDER BY read_at DESC
+  const recent = await db.getAllAsync<CandidateQueryRow>(
+    `SELECT a.id, a.topic, a.title, a.site_name AS siteName,
+            source.name AS sourceName, source.origin AS sourceOrigin,
+            a.author_key AS authorKey, ${domain} AS domain,
+            0 AS authorExposureCount, NULL AS authorLastExposedAt,
+            0 AS domainExposureCount, NULL AS domainLastExposedAt
+     FROM articles AS a
+     LEFT JOIN sources AS source ON source.id = a.source_id
+     WHERE a.is_read = 1 AND a.read_at IS NOT NULL
+       AND a.topic IN ('technology', 'economics', 'math')
+     ORDER BY a.read_at DESC
      LIMIT ?`,
     [DIVERSITY_CONTEXT_SIZE],
   );
-  return recent.reverse();
+  return recent.map(withSemanticCluster).reverse();
 }
 
 export async function countEligible(): Promise<number> {

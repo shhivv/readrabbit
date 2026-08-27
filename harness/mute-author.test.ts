@@ -16,6 +16,23 @@ process.env.NC_HARNESS_DB_DIR = testDbDir;
 // v6 migration and its author-key backfill, not only fresh installs.
 const legacyDb = new Database(join(testDbDir, "naturallycurious.db"));
 legacyDb.exec(`
+  CREATE TABLE sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_url TEXT NOT NULL,
+    feed_url TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    topic TEXT,
+    origin TEXT NOT NULL DEFAULT 'seed',
+    status TEXT NOT NULL DEFAULT 'active',
+    score REAL NOT NULL DEFAULT 0.5,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    etag TEXT,
+    last_modified TEXT,
+    last_fetched_at INTEGER,
+    avg_update_hours REAL NOT NULL DEFAULT 24,
+    next_check_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
   CREATE TABLE articles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id INTEGER,
