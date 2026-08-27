@@ -40,14 +40,20 @@ const HN_LAST_KEY = "disco:hn_last_at";
 const COMMUNITY_LAST_KEY = "disco:community_last_at";
 const SMALL_WEB_LAST_KEY = "disco:small_web_last_at";
 const REDDIT_ECON_LAST_KEY = "disco:reddit_econ_last_at";
-export const HN_DIRECT_ARTICLE_LIMIT = 12;
+export const HN_DIRECT_ARTICLE_LIMIT = 24;
 export const SMALL_WEB_DIRECT_ARTICLE_LIMIT = 30;
 export const REDDIT_ECON_DIRECT_ARTICLE_LIMIT = 12;
+
+const HN_RESULTS_PER_PAGE = 100;
+const HN_MAX_PAGES = 4;
 
 export interface HnStory {
   url: string;
   title: string;
   publishedAt: number | null;
+  points: number;
+  commentCount: number;
+  isFrontPage: boolean;
 }
 
 export interface HnDiscoveryResult {
@@ -55,7 +61,10 @@ export interface HnDiscoveryResult {
   stories: HnStory[];
 }
 
-export interface SmallWebStory extends HnStory {
+export interface SmallWebStory {
+  url: string;
+  title: string;
+  publishedAt: number | null;
   author: string;
   topic: Topic;
 }
@@ -210,6 +219,9 @@ export function parseHnStories(
       title?: unknown;
       created_at_i?: unknown;
       created_at?: unknown;
+      points?: unknown;
+      num_comments?: unknown;
+      _tags?: unknown;
     };
     if (typeof hit.url !== "string" || typeof hit.title !== "string") continue;
     const title = hit.title.trim();
@@ -244,10 +256,161 @@ export function parseHnStories(
       if (!Number.isNaN(parsedDate)) publishedAt = parsedDate;
     }
 
-    stories.push({ url, title, publishedAt });
+    stories.push({
+      url,
+      title,
+      publishedAt,
+      points:
+        typeof hit.points === "number" && Number.isFinite(hit.points)
+          ? Math.max(0, Math.trunc(hit.points))
+          : 0,
+      commentCount:
+        typeof hit.num_comments === "number" &&
+        Number.isFinite(hit.num_comments)
+          ? Math.max(0, Math.trunc(hit.num_comments))
+          : 0,
+      isFrontPage:
+        Array.isArray(hit._tags) && hit._tags.includes("front_page"),
+    });
     if (stories.length >= boundedLimit) break;
   }
   return stories;
+}
+
+// HN is valuable because its readers discover one-off independent work that
+// will never appear in a fixed feed catalog. Popularity alone, however, turns
+// the stream into product announcements and breaking news. This deliberately
+// blends a playful/experimental lane with a general viral-writing lane.
+function hnPlayfulness(title: string): number {
+  const normalized = title.toLowerCase();
+  let score = 0;
+  if (/^show hn\b/.test(normalized)) score += 2;
+  if (
+    /\b(paint|draw|art|visual(?:ize|izing|ization)?|animation|game|map|music|piano|creative|design|3d)\w*/.test(
+      normalized
+    )
+  ) {
+    score += 3;
+  }
+  if (
+    /\b(i built|i made|i trained|building|making|training|experiment(?:ing)?|playing|exploring|from scratch|inside|how i)\b/.test(
+      normalized
+    )
+  ) {
+    score += 2;
+  }
+  if (
+    /\b(weird|tiny|accident(?:al|ally)?|unexpected|reverse.engineer(?:ing)?|interactive|simulat\w*|playground|toy|museum)\b/.test(
+      normalized
+    )
+  ) {
+    score += 2;
+  }
+  return score;
+}
+
+function hnStoryDomain(story: HnStory): string {
+  try {
+    return rootDomain(new URL(story.url).host);
+  } catch {
+    return "";
+  }
+}
+
+function hnSelectionScore(story: HnStory): number {
+  return (
+    Math.log2(Math.max(1, story.points) + 1) +
+    hnPlayfulness(story.title) * 1.5
+  );
+}
+
+function isLikelyHnReadingDestination(story: HnStory): boolean {
+  if (!looksLikeArticlePath(story.url)) return false;
+  const title = story.title.trim();
+  // Bare product/model names and wire-style event headlines may belong on HN,
+  // but they are not the personal essays and experiments this reader promises.
+  if ((title.match(/\S+/g) ?? []).length < 4) return false;
+  try {
+    if (
+      /\/(?:press|press-release|newsroom)(?:\/|$)/i.test(
+        new URL(story.url).pathname
+      )
+    ) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  if (
+    /\b(acquires?|acquisition|agrees to acquire|introduces?|unveils?|shutting down|dies at|outage|state department|tariffs?|approves?|press release)\b/i.test(
+      title
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function selectHnStoriesForDirectIngestion(
+  stories: readonly HnStory[],
+  limit = HN_DIRECT_ARTICLE_LIMIT
+): HnStory[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0) return [];
+
+  const seenUrls = new Set<string>();
+  const eligible = stories.filter((story) => {
+    if (seenUrls.has(story.url)) return false;
+    seenUrls.add(story.url);
+    return (
+      classifyDomain(story.url).allowed &&
+      hnStoryDomain(story) !== "" &&
+      isLikelyHnReadingDestination(story)
+    );
+  });
+  const playful = eligible
+    .filter((story) => hnPlayfulness(story.title) > 0)
+    .sort((a, b) => hnSelectionScore(b) - hnSelectionScore(a));
+  const viral = [...eligible].sort(
+    (a, b) => b.points - a.points || hnSelectionScore(b) - hnSelectionScore(a)
+  );
+
+  const selected: HnStory[] = [];
+  const selectedUrls = new Set<string>();
+  const selectedDomains = new Set<string>();
+  const take = (pool: readonly HnStory[], quota: number) => {
+    for (const story of pool) {
+      if (selected.length >= boundedLimit || quota <= 0) return;
+      const domain = hnStoryDomain(story);
+      if (selectedUrls.has(story.url) || selectedDomains.has(domain)) continue;
+      selected.push(story);
+      selectedUrls.add(story.url);
+      selectedDomains.add(domain);
+      quota--;
+    }
+  };
+
+  // A story that is literally on today's front page should not disappear
+  // because it has 68 points while the weekly pool contains hundreds above
+  // 70. Keep most of this bounded batch available to that live zeitgeist,
+  // then reserve slots for older playful hits that have rolled off it.
+  const frontPage = eligible
+    .filter((story) => story.isFrontPage)
+    .sort((a, b) => b.points - a.points);
+  take(frontPage, Math.max(1, boundedLimit - 4));
+  take(playful, boundedLimit - selected.length);
+  take(viral, boundedLimit - selected.length);
+  // A very small result set should still fill its requested bound. Domain
+  // repetition is a last resort, never the normal discovery path.
+  if (selected.length < boundedLimit) {
+    for (const story of [...playful, ...viral]) {
+      if (selected.length >= boundedLimit) break;
+      if (selectedUrls.has(story.url)) continue;
+      selected.push(story);
+      selectedUrls.add(story.url);
+    }
+  }
+  return selected;
 }
 
 export async function hnDiscover(
@@ -266,21 +429,60 @@ export async function hnDiscover(
   }
 
   const weekAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
-  const url = `https://hn.algolia.com/api/v1/search_by_date?tags=story&numericFilters=created_at_i>${weekAgo},points>70&hitsPerPage=60`;
+  const baseUrl = `https://hn.algolia.com/api/v1/search_by_date?tags=story&numericFilters=created_at_i>${weekAgo},points>70&hitsPerPage=${HN_RESULTS_PER_PAGE}`;
   try {
-    const res = await fetchText(url, { timeoutMs: 15000 });
+    const [res, frontPageRes] = await Promise.all([
+      fetchText(`${baseUrl}&page=0`, { timeoutMs: 15000 }),
+      fetchText(
+        `https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=${HN_RESULTS_PER_PAGE}`,
+        { timeoutMs: 15000 }
+      ),
+    ]);
     if (!res.ok) return { candidateDomainsAdded: 0, stories: [] };
-    const data = JSON.parse(res.text) as unknown;
-    // Keep enough links for secondary publisher-feed discovery, while only a
-    // small first slice is persisted for same-crawl article enrichment.
-    const allStories = parseHnStories(data, 60);
-    const links = allStories.map((story) => ({ url: story.url }));
+    const firstPage = JSON.parse(res.text) as { nbPages?: unknown };
+    const reportedPages =
+      typeof firstPage.nbPages === "number" && Number.isFinite(firstPage.nbPages)
+        ? Math.max(1, Math.trunc(firstPage.nbPages))
+        : 1;
+    const pageCount = Math.min(HN_MAX_PAGES, reportedPages);
+    const remainingPages = await Promise.all(
+      Array.from({ length: pageCount - 1 }, (_, index) =>
+        fetchText(`${baseUrl}&page=${index + 1}`, { timeoutMs: 15000 })
+      )
+    );
+    // Put the front-page response first so deduplication retains its tag when
+    // the same URL is also present in the weekly search response.
+    const pages: unknown[] = [];
+    if (frontPageRes.ok) {
+      try {
+        pages.push(JSON.parse(frontPageRes.text) as unknown);
+      } catch {}
+    }
+    pages.push(firstPage);
+    for (const page of remainingPages) {
+      if (!page.ok) continue;
+      try {
+        pages.push(JSON.parse(page.text) as unknown);
+      } catch {}
+    }
+
+    const allStories = pages.flatMap((page) =>
+      parseHnStories(page, HN_RESULTS_PER_PAGE)
+    );
+    const selectedStories = selectHnStoriesForDirectIngestion(allStories);
+    // Candidate promotion only inspects a bounded prefix, so lead with the
+    // selected domains before retaining extra links for publisher-feed probes.
+    const selectedUrls = new Set(selectedStories.map((story) => story.url));
+    const links = [
+      ...selectedStories,
+      ...allStories.filter((story) => !selectedUrls.has(story.url)),
+    ].map((story) => ({ url: story.url }));
     await kvSetJson(HN_LAST_KEY, Date.now());
     const before = Object.keys(await loadCandidates()).length;
     enqueueCandidates(links, "hn");
     return {
       candidateDomainsAdded: Object.keys(poolCache ?? {}).length - before,
-      stories: allStories.slice(0, HN_DIRECT_ARTICLE_LIMIT),
+      stories: selectedStories,
     };
   } catch {
     return { candidateDomainsAdded: 0, stories: [] };

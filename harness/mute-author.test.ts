@@ -65,6 +65,27 @@ legacyDb.exec(`
       1,
       123456
     );
+  INSERT INTO sources
+    (site_url, feed_url, name, topic, origin, status, score,
+     consecutive_failures, avg_update_hours, next_check_at, created_at)
+    VALUES (
+      'https://planetpython.org',
+      'https://planetpython.org/rss20.xml',
+      'Planet Python',
+      'technology',
+      'aggregator',
+      'active',
+      0.45,
+      0,
+      24,
+      123456,
+      1
+    );
+  INSERT INTO articles
+    (source_id, url, title, author, fetched_at, is_bookmarked)
+    VALUES
+      (1, 'https://python.example/unread', 'Python news', '', 1, 0),
+      (1, 'https://python.example/saved', 'Saved Python news', '', 1, 1);
   PRAGMA user_version = 5;
 `);
 legacyDb.close();
@@ -226,6 +247,28 @@ describe("author preference and exposure persistence", () => {
       exposure_count: 1,
       last_exposed_at: 123456,
     });
+  });
+
+  test("retires Planet Python on upgrades without archiving bookmarks", async () => {
+    const db = await getDb();
+    const source = await db.getFirstAsync<{
+      status: string;
+      next_check_at: number | null;
+    }>("SELECT status, next_check_at FROM sources WHERE name = 'Planet Python'");
+    const articles = await db.getAllAsync<{
+      url: string;
+      is_archived: number;
+    }>(
+      `SELECT url, is_archived FROM articles
+       WHERE url LIKE 'https://python.example/%'
+       ORDER BY url`
+    );
+
+    expect(source).toEqual({ status: "paused", next_check_at: null });
+    expect(articles).toEqual([
+      { url: "https://python.example/saved", is_archived: 0 },
+      { url: "https://python.example/unread", is_archived: 1 },
+    ]);
   });
 
   test("normalizes bylines, persists the mute, and supports unmuting", async () => {

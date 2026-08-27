@@ -236,7 +236,7 @@ export async function ingestHnStories(
         publishedDate: story.publishedAt,
         excerpt: "",
         topic: "technology",
-        score: HN_ARTICLE_SCORE,
+        score: hnArticleScore(story.points, story.isFrontPage),
       });
       if (id != null) inserted++;
     } catch {
@@ -244,6 +244,16 @@ export async function ingestHnStories(
     }
   }
   return inserted;
+}
+
+export function hnArticleScore(points: number, isFrontPage = false): number {
+  if (!Number.isFinite(points) || points <= 0) return HN_ARTICLE_SCORE;
+  // Votes are useful evidence, but remain bounded so HN cannot crowd every
+  // established feed out of a background enrichment batch.
+  return Math.min(
+    0.78,
+    0.54 + Math.log2(points + 1) * 0.018 + (isFrontPage ? 0.05 : 0)
+  );
 }
 
 export async function ingestSmallWebStories(

@@ -15,12 +15,14 @@ Bun.plugin({
 
 const {
   parseHnStories,
+  selectHnStoriesForDirectIngestion,
   selectRedditEconomicsStories,
   selectSmallWebStories,
 } = await import(
   "../src/lib/crawler/discover"
 );
 const {
+  hnArticleScore,
   ingestHnStories,
   ingestRedditEconomicsStories,
   ingestSmallWebStories,
@@ -41,6 +43,9 @@ describe("direct Hacker News article discovery", () => {
             url: "https://medium.com/@writer/an-essay#discussion",
             title: "  An essay HN readers recommended  ",
             created_at_i: createdAt,
+            points: 218,
+            num_comments: 28,
+            _tags: ["story", "front_page"],
           },
           {
             url: "https://news.ycombinator.com/item?id=123",
@@ -67,13 +72,108 @@ describe("direct Hacker News article discovery", () => {
         url: "https://medium.com/@writer/an-essay",
         title: "An essay HN readers recommended",
         publishedAt: createdAt * 1000,
+        points: 218,
+        commentCount: 28,
+        isFrontPage: true,
       },
       {
         url: "https://writer.example/posts/two",
         title: "Second article",
         publishedAt: Date.parse("2026-08-22T10:00:00Z"),
+        points: 0,
+        commentCount: 0,
+        isFrontPage: false,
       },
     ]);
+  });
+
+  test("keeps today's front page and older playful HN hits in the same diverse batch", () => {
+    const story = (
+      url: string,
+      title: string,
+      points: number,
+      isFrontPage = false
+    ) => ({
+      url,
+      title,
+      publishedAt: Date.now(),
+      points,
+      commentCount: 0,
+      isFrontPage,
+    });
+    const currentFrontPage = Array.from({ length: 14 }, (_, index) =>
+      story(
+        `https://front-${index}.example/essay`,
+        `A current Hacker News essay ${index}`,
+        500 - index * 20,
+        true
+      )
+    );
+    const weeklyViral = Array.from({ length: 40 }, (_, index) =>
+      story(
+        `https://weekly-${index}.example/post`,
+        `A popular systems article ${index}`,
+        1_500 - index * 20
+      )
+    );
+    const harness = story(
+      "https://scott-fryxell.github.io/blog/the-harness-is-the-thing/",
+      "The Harness Is the Thing",
+      68,
+      true
+    );
+    const painting = story(
+      "https://surya.website/rling-qwen-to-paint-with-code",
+      "Training AI to Paint with Code",
+      218
+    );
+    const duplicatePublisher = story(
+      "https://surya.website/another-post",
+      "Another systems article",
+      900
+    );
+    const mainstream = story(
+      "https://www.nytimes.com/2026/08/27/technology/news.html",
+      "A very popular announcement",
+      10_000,
+      true
+    );
+    const announcement = story(
+      "https://vendor.example/news/company-update",
+      "Vendor unveils Next Generation Product",
+      9_000,
+      true
+    );
+    const homepage = story(
+      "https://shiny-tool.example/",
+      "A shiny new browser tool",
+      8_000,
+      true
+    );
+
+    const selected = selectHnStoriesForDirectIngestion(
+      [
+        ...weeklyViral,
+        duplicatePublisher,
+        painting,
+        ...currentFrontPage,
+        harness,
+        mainstream,
+        announcement,
+        homepage,
+      ],
+      24
+    );
+    const urls = selected.map((item) => item.url);
+    const domains = selected.map((item) => new URL(item.url).host);
+
+    expect(urls).toContain(harness.url);
+    expect(urls).toContain(painting.url);
+    expect(urls).not.toContain(mainstream.url);
+    expect(urls).not.toContain(announcement.url);
+    expect(urls).not.toContain(homepage.url);
+    expect(selected).toHaveLength(24);
+    expect(new Set(domains).size).toBe(domains.length);
   });
 
   test("persists title/date/topic metadata for enrichment in the same crawl", async () => {
@@ -84,11 +184,17 @@ describe("direct Hacker News article discovery", () => {
           url: "https://writer.example/posts/fresh",
           title: "A fresh systems essay",
           publishedAt: 1_787_460_000_000,
+          points: 218,
+          commentCount: 28,
+          isFrontPage: false,
         },
         {
           url: "https://known.example/posts/existing",
           title: "Already present",
           publishedAt: null,
+          points: 0,
+          commentCount: 0,
+          isFrontPage: false,
         },
       ],
       async (metadata) => {
@@ -106,16 +212,25 @@ describe("direct Hacker News article discovery", () => {
       siteName: "writer.example",
       publishedDate: 1_787_460_000_000,
       topic: "technology",
-      score: 0.5,
+      score: hnArticleScore(218),
     });
+  });
+
+  test("gives a bounded enrichment boost to live front-page stories", () => {
+    expect(hnArticleScore(68, true)).toBeGreaterThan(hnArticleScore(68));
+    expect(hnArticleScore(100_000, true)).toBeLessThanOrEqual(0.78);
+    expect(hnArticleScore(0, true)).toBe(0.5);
   });
 
   test("hard-caps direct ingestion even when called with an oversized batch", async () => {
     let writes = 0;
-    const stories = Array.from({ length: 20 }, (_, index) => ({
+    const stories = Array.from({ length: 30 }, (_, index) => ({
       url: `https://publisher-${index}.example/story`,
       title: `Story ${index}`,
       publishedAt: null,
+      points: 100,
+      commentCount: 10,
+      isFrontPage: false,
     }));
 
     const inserted = await ingestHnStories(stories, async () => {
@@ -123,8 +238,8 @@ describe("direct Hacker News article discovery", () => {
       return writes;
     });
 
-    expect(inserted).toBe(12);
-    expect(writes).toBe(12);
+    expect(inserted).toBe(24);
+    expect(writes).toBe(24);
   });
 });
 

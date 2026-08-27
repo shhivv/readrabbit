@@ -37,8 +37,6 @@
   { "name": "Bob Nystrom", "siteUrl": "https://journal.stuffwithstuff.com", "feedUrl": "https://journal.stuffwithstuff.com/atom.xml", "topic": "technology" },
   { "name": "Paul Graham", "siteUrl": "https://www.paulgraham.com", "feedUrl": "https://www.aaronsw.com/2002/feeds/pgessays.rss", "topic": "technology" },
   { "name": "Lobsters", "siteUrl": "https://lobste.rs", "feedUrl": "https://lobste.rs/rss", "topic": "technology", "origin": "aggregator" },
-  { "name": "Planet Python", "siteUrl": "https://planetpython.org", "feedUrl": "https://planetpython.org/rss20.xml", "topic": "technology", "origin": "aggregator" },
-
   { "name": "Marginal Revolution", "siteUrl": "https://marginalrevolution.com", "feedUrl": "https://marginalrevolution.com/feed", "topic": "economics" },
   { "name": "John Cochrane (The Grumpy Economist)", "siteUrl": "https://johnhcochrane.blogspot.com", "feedUrl": "https://johnhcochrane.blogspot.com/feeds/posts/default?alt=rss", "topic": "economics" },
   { "name": "Arnold Kling", "siteUrl": "https://www.arnoldkling.com", "feedUrl": "https://www.arnoldkling.com/blog/feed/", "topic": "economics" },

@@ -79,7 +79,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 16;
+const DB_VERSION = 17;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -630,6 +630,29 @@ async function migrate(db: SQLite.SQLiteDatabase) {
       GROUP BY author_key;
     `);
     version = 16;
+  }
+
+  // v17: retire Planet Python. Removing it from the bundled catalog only
+  // affects fresh installs; existing databases otherwise keep polling it and
+  // keep all of its unread backlog. Preserve bookmarks while clearing that
+  // ecosystem-heavy queue from recommendations.
+  if (version < 17) {
+    await db.execAsync(`
+      UPDATE articles
+      SET is_archived = 1
+      WHERE is_bookmarked = 0
+        AND source_id IN (
+          SELECT id FROM sources
+          WHERE feed_url = 'https://planetpython.org/rss20.xml'
+             OR site_url = 'https://planetpython.org'
+        );
+
+      UPDATE sources
+      SET status = 'paused', next_check_at = NULL
+      WHERE feed_url = 'https://planetpython.org/rss20.xml'
+         OR site_url = 'https://planetpython.org';
+    `);
+    version = 17;
   }
 
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);
