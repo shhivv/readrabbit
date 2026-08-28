@@ -12,6 +12,7 @@
   </defs>
   <rect width="1024" height="1024" fill="#151515"/>
   <g transform="translate(1024 0) scale(-1 1)">
+   <g transform="translate(512 512) scale(0.75) translate(-512 -512)">
     <g mask="url(#simplify-details)">
       <g transform="translate(61.15 62) scale(1.225)">
         <g class="original-rabbit-lines" transform="translate(20 20)" fill="#fff">
@@ -28,5 +29,6 @@
     <path d="M517 778 C490 746 463 721 468 687 C473 649 508 634 551 637 C627 642 690 682 716 736 C735 775 730 811 704 834" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M680 840 C620 819 536 809 486 829 C469 836 468 846 482 854 C525 878 617 875 680 840" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M704 834 C724 846 744 843 754 832 C762 823 755 815 745 817" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+   </g>
   </g>
 </svg>
