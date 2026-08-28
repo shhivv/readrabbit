@@ -68,14 +68,14 @@ const ENRICH_BATCH: Record<CrawlMode, number> = {
 
 const DISCOVER_PROBES: Record<CrawlMode, number> = {
   initial: 24,
-  foreground: 6,
-  background: 6,
+  foreground: 12,
+  background: 12,
 };
 
 // Freshness contract at ingest: entries older than this never enter the DB.
 // Archive-heavy feeds otherwise flood storage and enrichment budget with
 // years-old posts the reader would never show anyway.
-const MAX_INGEST_AGE_DAYS = 90;
+const MAX_INGEST_AGE_DAYS = 60;
 
 // Entries whose feed summary carries at least this many words are treated
 // as full articles (feed-tier enrichment) — readable immediately, no page

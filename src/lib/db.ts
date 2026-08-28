@@ -79,7 +79,7 @@ export interface InterestRow {
   created_at: number;
 }
 
-const DB_VERSION = 17;
+const DB_VERSION = 18;
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 
@@ -657,6 +657,27 @@ async function migrate(db: SQLite.SQLiteDatabase) {
     version = 17;
   }
 
+  // v18: flatten the source trust hierarchy so discovery finds compete
+  // fairly with seed blogs, and reset discovery throttles so the expanded
+  // channels fire immediately on upgrade.
+  if (version < 18) {
+    await db.execAsync(`
+      UPDATE sources SET score = MIN(score, 0.58)
+      WHERE origin = 'seed' AND score > 0.58;
+
+      UPDATE sources SET score = MAX(score, 0.50)
+      WHERE origin IN ('hn', 'aggregator') AND score < 0.50;
+
+      DELETE FROM kv WHERE key IN (
+        'disco:hn_last_at',
+        'disco:small_web_last_at',
+        'disco:reddit_econ_last_at',
+        'disco:community_last_at'
+      );
+    `);
+    version = 18;
+  }
+
   await db.execAsync(`PRAGMA user_version = ${DB_VERSION}`);
 }
 
@@ -706,10 +727,10 @@ export async function upsertSource(input: {
   // Independent-writer prior: seeded personal blogs outrank HN-mined domains,
   // which outrank anything else we might pick up along the way.
   const priorByOrigin: Record<SourceOrigin, number> = {
-    seed: 0.65,
+    seed: 0.58,
     outbound: 0.55,
-    hn: 0.5,
-    aggregator: 0.45,
+    hn: 0.54,
+    aggregator: 0.50,
   };
   await db.runAsync(
     `INSERT INTO sources (site_url, feed_url, name, topic, origin, score, created_at)
@@ -1011,7 +1032,7 @@ export async function bumpSourceTrust(
   const db = await getDb();
   await db.runAsync(
     `UPDATE sources
-     SET score = MAX(0.3, MIN(0.85, score * 0.9 + ? * 0.1))
+     SET score = MAX(0.3, MIN(0.85, score * 0.8 + ? * 0.2))
      WHERE id = ?`,
     [quality, sourceId]
   );

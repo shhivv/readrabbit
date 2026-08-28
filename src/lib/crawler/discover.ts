@@ -40,7 +40,7 @@ const HN_LAST_KEY = "disco:hn_last_at";
 const COMMUNITY_LAST_KEY = "disco:community_last_at";
 const SMALL_WEB_LAST_KEY = "disco:small_web_last_at";
 const REDDIT_ECON_LAST_KEY = "disco:reddit_econ_last_at";
-export const HN_DIRECT_ARTICLE_LIMIT = 24;
+export const HN_DIRECT_ARTICLE_LIMIT = 36;
 export const SMALL_WEB_DIRECT_ARTICLE_LIMIT = 30;
 export const REDDIT_ECON_DIRECT_ARTICLE_LIMIT = 12;
 
@@ -187,9 +187,9 @@ export function enqueueCandidates(
 
   // cap pool size: drop oldest beyond 400
   const entries = Object.entries(poolCache);
-  if (entries.length > 400) {
+  if (entries.length > 600) {
     entries.sort((a, b) => b[1].count - a[1].count || b[1].addedAt - a[1].addedAt);
-    poolCache = Object.fromEntries(entries.slice(0, 400));
+    poolCache = Object.fromEntries(entries.slice(0, 600));
   }
   if (changed) poolDirty = true;
 }
@@ -752,7 +752,7 @@ export async function communityDiscover(
 }
 
 const BLOGROLL_MINED_KEY = "disco:blogroll_mined_at";
-const BLOGROLL_REMINE_DAYS = 30;
+const BLOGROLL_REMINE_DAYS = 14;
 // Pages personal blogs keep specifically to recommend other writing.
 const BLOGROLL_PATHS = ["/", "/about/", "/links/", "/blogroll/", "/reading/"];
 
@@ -900,7 +900,7 @@ export async function probeTopCandidates(
     // A one-off community appearance earns its article a chance, not a
     // permanent subscription to the whole publisher. Only topic-specific
     // aggregators bypass the two-citation promotion threshold.
-    .filter(([, c]) => c.origin === "aggregator" || c.count >= 2)
+    .filter(([, c]) => c.origin === "aggregator" || c.origin === "hn" || c.count >= 2)
     .sort((a, b) => b[1].count - a[1].count);
 
   const db = await getDb();

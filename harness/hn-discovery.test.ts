@@ -18,6 +18,7 @@ const {
   selectHnStoriesForDirectIngestion,
   selectRedditEconomicsStories,
   selectSmallWebStories,
+  HN_DIRECT_ARTICLE_LIMIT,
 } = await import(
   "../src/lib/crawler/discover"
 );
@@ -238,7 +239,7 @@ describe("direct Hacker News article discovery", () => {
 
   test("hard-caps direct ingestion even when called with an oversized batch", async () => {
     let writes = 0;
-    const stories = Array.from({ length: 30 }, (_, index) => ({
+    const stories = Array.from({ length: 50 }, (_, index) => ({
       url: `https://publisher-${index}.example/story`,
       title: `Story ${index}`,
       publishedAt: null,
@@ -252,8 +253,8 @@ describe("direct Hacker News article discovery", () => {
       return writes;
     });
 
-    expect(inserted).toBe(24);
-    expect(writes).toBe(24);
+    expect(inserted).toBe(HN_DIRECT_ARTICLE_LIMIT);
+    expect(writes).toBe(HN_DIRECT_ARTICLE_LIMIT);
   });
 });
 

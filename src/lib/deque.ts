@@ -42,8 +42,8 @@ export const LOW_WATER = 12;
 // - Preferences: selected topics and muted bylines are hard filters.
 // - Exposure: durable author/publication counts cool familiar identities;
 //   bylines carry more weight than sites and follow people across domains.
-const STALE_DAYS = 90;
-const HALF_LIFE_DAYS = 14;
+const STALE_DAYS = 60;
+const HALF_LIFE_DAYS = 10;
 
 export interface DequeState {
   ids: number[];
@@ -79,7 +79,11 @@ function weightedCandidateQuery(topicCount: number): string {
   const uniform = `((ABS(RANDOM()) % 1000000) + 1) / 1000001.0`;
   const trust = `(0.75 + 0.5 * MIN(MAX(a.score, 0.0), 1.0))`;
   const relevance = `(0.35 + 0.65 * a.topic_relevance)`;
-  const key = `(MAX(a.quality, 0.05) * ${relevance} * ${recency} * ${trust} * ${uniform})`;
+  // Articles from non-seed discovery (HN, Small Web, aggregator finds) get a
+  // ranking boost so fresh voices reach the slate even when seed blogs produce
+  // more total volume at similar individual quality.
+  const discoveryBoost = `(CASE WHEN source.origin IS NULL OR source.origin != 'seed' THEN 1.25 ELSE 1.0 END)`;
+  const key = `(MAX(a.quality, 0.05) * ${relevance} * ${recency} * ${trust} * ${discoveryBoost} * ${uniform})`;
   const domain =
     `COALESCE(NULLIF(a.site_domain, ''), ` +
     `CASE WHEN a.source_id IS NOT NULL THEN 'source:' || a.source_id ` +

@@ -141,6 +141,55 @@ export function linkDensityPenalty(contentHtml: string): number {
   return clamp01((ratio - 0.3) * 2.5);
 }
 
+// First-person narrative, creative framing, and intellectual depth markers
+// that distinguish original essays from routine tutorials and announcements.
+const INTERESTINGNESS_PHRASES: [RegExp, number][] = [
+  // first-person creation / experiment narratives
+  [/\b(i built|i made|i wrote|i trained|i created|building my|making my)\b/i, 0.18],
+  [/\b(how i|what i learned|lessons from|my experience|things i)\b/i, 0.14],
+  [/\b(i discovered|i realized|i was wrong|changed my mind)\b/i, 0.16],
+  // deep technical / intellectual investigation
+  [/\b(from scratch|under the hood|inside|internals|deep dive|dissecting)\b/i, 0.16],
+  [/\b(reverse.engineer(?:ing|ed)?|decompil(?:ing|ed)|disassembl(?:ing|ed))\b/i, 0.18],
+  [/\b(proof|theorem|conjecture|derivation|formal verification)\b/i, 0.12],
+  // creative / playful / visual
+  [/\b(interactive|visualization|simulator|playground|experiment(?:ing)?)\b/i, 0.14],
+  [/\b(animation|generative|procedural|creative coding|art of)\b/i, 0.14],
+  [/\b(game|music|paint|draw(?:ing)?|3d|render(?:ing)?)\b/i, 0.10],
+  // surprising / counterintuitive framing
+  [/\b(surprising|counterintuitive|unexpected|paradox|misconception)\b/i, 0.12],
+  [/\b(actually|myth|wrong about|misunderstood|overlooked)\b/i, 0.08],
+  // comparative / analytical depth
+  [/\b(trade.?offs?|compared|versus|vs\.?)\b/i, 0.06],
+  [/\b(case study|war story|post.?mortem|incident report)\b/i, 0.14],
+  // question-driven investigation (genuine curiosity, not clickbait)
+  [/^(why|how|what) .{15,}/i, 0.06],
+];
+
+const ROUTINE_TITLE_PATTERNS: [RegExp, number][] = [
+  [/\b(getting started|introduction to|beginner'?s? guide|tutorial)\b/i, -0.12],
+  [/\b(cheat ?sheet|quick ?start|step.by.step|setup guide)\b/i, -0.10],
+  [/\b(release notes?|version \d|changelog|what'?s new in)\b/i, -0.10],
+  [/\b(announcement|announcing|now available|just released|launched)\b/i, -0.08],
+];
+
+export function interestingnessScore(title: string, textContent?: string): number {
+  let score = 0;
+  for (const [pattern, weight] of INTERESTINGNESS_PHRASES) {
+    if (pattern.test(title)) score += weight;
+  }
+  for (const [pattern, weight] of ROUTINE_TITLE_PATTERNS) {
+    if (pattern.test(title)) score += weight;
+  }
+  if (textContent) {
+    const head = textContent.slice(0, 2000).toLowerCase();
+    if (/\bi (built|made|wrote|discovered|realized|tried)\b/.test(head)) {
+      score += 0.06;
+    }
+  }
+  return clamp01(Math.max(0, score));
+}
+
 export interface QualityResult {
   quality: number;
   components: {
@@ -151,6 +200,7 @@ export interface QualityResult {
     punctuation: number;
     clickbait: number;
     linkDensity: number;
+    interestingness: number;
   };
 }
 
@@ -162,16 +212,18 @@ export function scoreArticleQuality(article: ExtractedArticle): QualityResult {
   const punctuation = punctuationPenalty(article.title);
   const clickbait = clickbaitPenalty(article.title);
   const linkDensity = linkDensityPenalty(article.contentHtml);
+  const interestingness = interestingnessScore(article.title, article.textContent);
 
   const quality = clamp01(
     0.06 + // floor so clean short posts stay in the running
-      0.3 * depth +
-      0.14 * stopwords +
+      0.22 * depth +
+      0.10 * stopwords +
       0.08 * sentences +
       0.16 * (1 - caps) +
       0.06 * (1 - punctuation) +
       0.12 * (1 - clickbait) +
-      0.08 * (1 - linkDensity)
+      0.08 * (1 - linkDensity) +
+      0.12 * interestingness
   );
 
   return {
@@ -184,6 +236,7 @@ export function scoreArticleQuality(article: ExtractedArticle): QualityResult {
       punctuation,
       clickbait,
       linkDensity,
+      interestingness,
     },
   };
 }
