@@ -20,6 +20,7 @@ import { PrimaryButton, TopicCard } from "@/lib/ui";
 import { seedCatalogSources, kvSet, type Topic } from "@/lib/db";
 import { runCrawl } from "@/lib/crawler/engine";
 import { registerBackgroundCrawl } from "@/lib/background";
+import { capture } from "@/lib/analytics";
 
 const GITHUB_URL = "https://github.com/shhivv/readrabbit";
 const WEBSITE_URL = "https://readrabbit.one";
@@ -65,9 +66,11 @@ export default function OnboardingScreen() {
 
   async function begin() {
     setStarting(true);
-    await seedCatalogSources([...selected]);
-    await kvSet("topics", JSON.stringify([...selected]));
+    const topics = [...selected];
+    await seedCatalogSources(topics);
+    await kvSet("topics", JSON.stringify(topics));
     await kvSet("onboarded", "1");
+    capture("onboarding_completed", { topics });
     registerBackgroundCrawl().catch(() => {});
 
     // entirely behind the scenes: the reader opens now and fills itself

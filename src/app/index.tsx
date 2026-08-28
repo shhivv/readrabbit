@@ -59,6 +59,7 @@ import {
 import { refreshIfNeeded } from "@/lib/crawler/engine";
 import { CodeBlock } from "@/lib/code";
 import { colors, fonts, spacing } from "@/lib/theme";
+import { capture } from "@/lib/analytics";
 
 const SPRING_CONFIG = { damping: 20, stiffness: 300, mass: 0.8 };
 const SPRING_SNAPPY = { damping: 15, stiffness: 400, mass: 0.5 };
@@ -761,6 +762,10 @@ export default function ReaderScreen() {
     setBookmarkedState(!!value.row.is_bookmarked);
     setArticleKey((k) => k + 1);
     markRead(value.row.id).catch(() => {});
+    capture("article_viewed", {
+      topic: value.row.topic,
+      word_count: value.row.word_count,
+    });
   }, []);
 
   const loadReaderIds = useCallback(async () => {
@@ -1042,6 +1047,9 @@ export default function ReaderScreen() {
     if (!current) return;
 
     const next = !bookmarked;
+    capture(next ? "article_bookmarked" : "article_unbookmarked", {
+      topic: current.row.topic,
+    });
     const articleId = current.row.id;
     const updated: HydratedArticle = {
       ...current,
@@ -1078,6 +1086,7 @@ export default function ReaderScreen() {
 
   const shareArticle = useCallback(() => {
     if (!article) return;
+    capture("article_shared", { topic: article.row.topic });
     Share.share({
       message: `${article.row.title}\n${article.row.url}\n\nshared from ReadRabbit`,
       url: article.row.url,
@@ -1094,6 +1103,7 @@ export default function ReaderScreen() {
     const current = articleRef.current;
     if (!current?.row.author.trim() || navigationInFlightRef.current) return;
 
+    capture("author_muted");
     navigationInFlightRef.current = true;
     const oldIds = dequeRef.current;
     const oldIndex = currentIndexRef.current;

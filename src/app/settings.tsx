@@ -28,6 +28,7 @@ import {
 import { getArticleAttribution } from "@/lib/attribution";
 import { runCrawl } from "@/lib/crawler/engine";
 import { PrimaryButton, TopicCard } from "@/lib/ui";
+import { capture } from "@/lib/analytics";
 
 const GITHUB_URL = "https://github.com/shhivv/readrabbit";
 const WEBSITE_URL = "https://readrabbit.one";
@@ -120,6 +121,7 @@ export default function SettingsScreen() {
 
       await kvSet("topics", JSON.stringify([...selected]));
       setSaved(new Set(selected));
+      capture("topics_updated", { topics: [...selected] });
       // A preference change is explicit user intent, so bypass the ordinary
       // four-hour refresh throttle. The mounted reader will rebuild on focus
       // while this crawl starts filling any newly selected topic.

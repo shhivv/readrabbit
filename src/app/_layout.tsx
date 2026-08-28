@@ -2,6 +2,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import * as SplashScreen from "expo-splash-screen";
+import { PostHogProvider, usePostHog } from "posthog-react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useEffect, useState } from "react";
@@ -9,14 +10,20 @@ import { View, ActivityIndicator } from "react-native";
 import { colors } from "@/lib/theme";
 import { allFonts } from "@/lib/fonts";
 import { getDb, kvGet } from "@/lib/db";
+import { setPostHogClient } from "@/lib/analytics";
 
 SplashScreen.preventAutoHideAsync();
 
-export default function RootLayout() {
+function RootInner() {
   const [fontsLoaded] = useFonts(allFonts());
   const [ready, setReady] = useState(false);
   const router = useRouter();
   const segments = useSegments();
+  const posthog = usePostHog();
+
+  useEffect(() => {
+    setPostHogClient(posthog);
+  }, [posthog]);
 
   useEffect(() => {
     if (!fontsLoaded) return;
@@ -73,24 +80,41 @@ export default function RootLayout() {
   }
 
   return (
-    <SafeAreaProvider>
-      <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
-        <>
-          <StatusBar style="light" />
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              contentStyle: { backgroundColor: colors.bg },
-            }}
-          >
-            <Stack.Screen name="onboarding" />
-            <Stack.Screen
-              name="settings"
-              options={{ presentation: "modal", animation: "slide_from_bottom" }}
-            />
-          </Stack>
-        </>
-      </GestureHandlerRootView>
-    </SafeAreaProvider>
+    <>
+      <StatusBar style="light" />
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: colors.bg },
+        }}
+      >
+        <Stack.Screen name="onboarding" />
+        <Stack.Screen
+          name="settings"
+          options={{ presentation: "modal", animation: "slide_from_bottom" }}
+        />
+      </Stack>
+    </>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <PostHogProvider
+      apiKey="<ph_project_api_key>"
+      options={{
+        host: "https://us.i.posthog.com",
+      }}
+      autocapture={{
+        captureScreens: true,
+        captureTouches: false,
+      }}
+    >
+      <SafeAreaProvider>
+        <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
+          <RootInner />
+        </GestureHandlerRootView>
+      </SafeAreaProvider>
+    </PostHogProvider>
   );
 }
