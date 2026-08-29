@@ -1,4 +1,3 @@
-import { normalizeWhitespace } from "./extract";
 import type { ExtractedArticle } from "./extract";
 
 // Composite article-quality scoring, grounded in:

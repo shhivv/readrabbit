@@ -89,7 +89,7 @@ export async function fetchText(
 }
 
 class Semaphore {
-  private queue: Array<() => void> = [];
+  private queue: (() => void)[] = [];
   private active = 0;
 
   constructor(private readonly limit: number) {}

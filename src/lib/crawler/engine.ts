@@ -402,8 +402,8 @@ async function updateFeeds(
       const db = await getDb();
       const ingestCutoff = Date.now() - MAX_INGEST_AGE_DAYS * 24 * 60 * 60 * 1000;
       let newEntries = 0;
-      const linkBatch: Array<{ url: string; topicHint: import("../db").Topic }> = [];
-      const feedTier: Array<{ id: number; entry: (typeof res.feed.entries)[number] }> = [];
+      const linkBatch: { url: string; topicHint: import("../db").Topic }[] = [];
+      const feedTier: { id: number; entry: (typeof res.feed.entries)[number] }[] = [];
 
       // One transaction per source: on flash storage every implicit
       // transaction is an fsync, so 30 individual inserts would mean 30

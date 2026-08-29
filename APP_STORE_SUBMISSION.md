@@ -26,15 +26,15 @@
 ### Version Information
 - [ ] App name: **ReadRabbit**
 - [ ] Subtitle (30 chars max): "For the Naturally Curious"
-- [ ] Promotional text (170 chars): "A private reading app that surfaces thoughtful writing from independent blogs. No account, no ads, no tracking. Just reading."
-- [ ] Description: Write a full description covering features (swipe reader, topic selection, bookmarks, paragraph likes, mute authors), the privacy angle (fully local, no accounts, open source), and the content focus (independent blogs, technology/economics/math)
+- [ ] Promotional text (170 chars): "A private reading app that surfaces thoughtful writing from independent blogs. No account, no ads, no attention traps. Just reading."
+- [ ] Description: Write a full description covering features (swipe reader, topic selection, bookmarks, paragraph likes, mute authors), the privacy angle (local-first, no accounts, anonymous usage analytics, open source), and the content focus (independent blogs, technology/economics/math)
 - [ ] Keywords (100 chars): `reading,rss,reader,blogs,articles,news,technology,economics,math,privacy,open source`
 - [ ] Support URL: `https://readrabbit.one`
 - [ ] Marketing URL (optional): `https://readrabbit.one`
 
 ### Screenshots
-- [ ] iPhone 6.7" (1290 x 2796): Required. At least 3 screenshots showing: feed/reader, onboarding topic selection, article view
-- [ ] iPhone 6.5" (1284 x 2778): Required if supporting older devices
+- [x] iPhone 6.9" screenshots captured at 1320 x 2868 in `store-assets/screenshots/`: onboarding, topic selection, and a reader page with entirely fictional content
+- [x] Separate iPhone 6.5" screenshots are not required when 6.9" screenshots are supplied; App Store Connect scales them for smaller displays
 - [ ] iPad screenshots: Not required (app runs in iPhone compatibility mode on iPad)
 
 ### App Review Information
@@ -42,8 +42,9 @@
 - [ ] **Review notes** (critical for avoiding rejection):
 
 ```
-ReadRabbit is a fully local RSS reader that fetches articles from publicly
-available blogs and RSS feeds. It does not require an account or login.
+ReadRabbit is a local-first RSS reader that fetches articles from publicly
+available blogs and RSS feeds. It does not require an account or login. Its
+article library, bookmarks, reading history, and preferences remain on-device.
 
 BACKGROUND FETCH: The app uses iOS Background App Refresh to periodically
 check RSS feeds for new articles. This happens entirely on-device. No user
@@ -56,9 +57,10 @@ independent authors and fetched directly from their public RSS feeds. The
 app does not host, moderate, or modify this content. It functions like
 Safari's Reading List or any RSS reader.
 
-ANALYTICS: The app uses PostHog for anonymous, non-identifying usage
-analytics (feature usage counts, screen views). No personal information
-is collected. The analytics use a random anonymous identifier, not IDFA.
+ANALYTICS: The app uses PostHog for anonymous, non-identifying product
+interaction events. It does not create person profiles, perform GeoIP
+enrichment, collect touch recordings, or use IDFA. Its random analytics
+identifier is session-scoped and discarded when the app restarts.
 
 NO ACCOUNT REQUIRED: The app has no login, registration, or account
 system. All data is stored locally on the device in a SQLite database.
@@ -74,21 +76,25 @@ articles will appear in the swipe reader.
 ## Build Configuration
 
 ### Before Building
-- [ ] Run `expo prebuild --clean` to regenerate native projects from app.json (this will apply BGTaskSchedulerPermittedIdentifiers and sync version numbers)
-- [ ] Verify app.json version matches what you want to submit (`0.1.1`)
-- [ ] Verify android versionCode is incremented for each upload
-- [ ] Replace `<ph_project_api_key>` in `src/app/_layout.tsx` with your actual PostHog project API key
+- [x] Run `bun install --frozen-lockfile`
+- [x] Run `bun run lint`, `bunx tsc --noEmit`, `bun test harness`, and `bunx expo-doctor`
+- [x] Run `bunx expo prebuild --clean` to regenerate native projects from app.json (this applies background-task and privacy-manifest configuration and syncs version numbers)
+- [x] Verify app.json version matches what you want to submit (`0.1.4`)
+- [x] Keep the PostHog Product Interaction declaration in `ios.privacyManifests` so clean prebuilds reproduce it
+- [x] Verify the PostHog client-side project token is configured in `src/app/_layout.tsx`
 
-### EAS Build
-- [ ] Configure `eas.json` with a production profile if not already done
-- [ ] Run `eas build --platform ios --profile production`
-- [ ] Or if building locally: `eas build --platform ios --local`
+### Local Xcode Build
+- [x] Verify a local Release build with `bunx expo run:ios --configuration Release`
+- [ ] Open `ios/ReadRabbit.xcworkspace` in Xcode
+- [ ] Select **Any iOS Device (arm64)**, then choose **Product > Archive**
+- [ ] In Organizer, choose **Distribute App > App Store Connect > Upload**
+- [x] EAS is not used for ReadRabbit builds
 
 ### Code Signing
 - [ ] Apple Developer account enrolled ($99/year)
 - [ ] Distribution certificate created
 - [ ] App Store provisioning profile created for `com.readrabbit.app`
-- [ ] EAS configured with Apple credentials (or use `--local` with Xcode signing)
+- [ ] ReadRabbit target has the correct Apple Developer Team selected in Xcode Signing & Capabilities
 
 ## Common Rejection Reasons: Audit Results
 
@@ -99,7 +105,7 @@ articles will appear in the swipe reader.
 
 ### Guideline 2.3 - Performance: Accurate Metadata
 - [x] App name matches what's in the app
-- [x] Screenshots will be accurate (take them from a real device)
+- [x] Screenshots are accurate simulator captures; the reader example uses clearly fictional content rather than a third-party blog
 - [x] Description does not mention other platforms or contain pricing info
 - [x] No misleading category selection
 
@@ -121,9 +127,9 @@ articles will appear in the swipe reader.
 - [x] Background crawling and recommendation engine
 
 ### Guideline 5.1.1 - Data Collection and Storage
-- [x] Privacy policy exists at https://readrabbit.one/privacy.html
+- [ ] Privacy policy custom domain is live at https://readrabbit.one/privacy.html
 - [x] Privacy policy accurately describes PostHog analytics collection
-- [x] Privacy policy linked in App Store Connect
+- [ ] Privacy policy linked in App Store Connect
 - [x] No IDFA/AdSupport framework usage
 - [x] PrivacyInfo.xcprivacy manifest updated with collected data types
 - [x] NSPrivacyTracking set to false (no tracking)
@@ -134,7 +140,7 @@ articles will appear in the swipe reader.
 - [x] App Privacy nutrition label matches actual data collection
 
 ### Guideline 2.16 - Background Modes
-- [x] UIBackgroundModes includes only "fetch" (legitimate use)
+- [x] UIBackgroundModes includes "processing" for Expo BackgroundTask
 - [x] Background task is genuinely used to fetch new RSS content
 - [x] BGTaskSchedulerPermittedIdentifiers is declared
 - [x] Review notes explain background fetch usage
@@ -169,4 +175,4 @@ articles will appear in the swipe reader.
 | App Store Connect > App Privacy > Privacy Policy | `https://readrabbit.one/privacy.html` |
 | App Store Connect > Version > Support URL | `https://readrabbit.one` |
 | App Store Connect > Version > Marketing URL | `https://readrabbit.one` |
-| PostHog API key in `src/app/_layout.tsx` | Replace `<ph_project_api_key>` |
+| PostHog project token | Configured in `src/app/_layout.tsx` |

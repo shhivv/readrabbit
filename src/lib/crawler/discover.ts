@@ -115,10 +115,10 @@ export function collectOutboundLinks(
   html: string,
   baseUrl: string,
   options: { allowRootPaths?: boolean; topicHint?: Topic } = {}
-): Array<{ url: string; topicHint: Topic }> {
+): { url: string; topicHint: Topic }[] {
   try {
     const base = new URL(baseUrl);
-    const results: Array<{ url: string; topicHint: Topic }> = [];
+    const results: { url: string; topicHint: Topic }[] = [];
     const seen = new Set<string>();
     const re = /<a\s[^>]*href=["']([^"']+)["'][^>]*>/gi;
     let match: RegExpExecArray | null;
@@ -153,7 +153,7 @@ export function collectOutboundLinks(
 }
 
 export function enqueueCandidates(
-  links: Array<{ url: string; topicHint?: Topic }>,
+  links: { url: string; topicHint?: Topic }[],
   origin: "outbound" | "hn" | "aggregator"
 ): void {
   if (!links.length || !poolCache) return;
@@ -829,7 +829,7 @@ function isNonBlogFeedTitle(title: string): boolean {
 // independent voice — exactly what the reader is not for.
 const EDITORIAL_DISTINCT_AUTHORS = 4;
 
-function distinctAuthors(entries: Array<{ author: string }>): number {
+function distinctAuthors(entries: { author: string }[]): number {
   return new Set(
     entries.map((e) => e.author.trim().toLowerCase()).filter(Boolean)
   ).size;
@@ -845,7 +845,7 @@ function normalizeName(raw: string): string {
 // already carry that voice — another feed of theirs worsens repetition.
 async function isDuplicateVoice(
   db: Awaited<ReturnType<typeof getDb>>,
-  feed: { title: string; entries: Array<{ author: string }> },
+  feed: { title: string; entries: { author: string }[] },
   candidateDomain?: string
 ): Promise<boolean> {
   const authors = new Set<string>();

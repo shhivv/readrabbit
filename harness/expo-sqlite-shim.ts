@@ -3,7 +3,7 @@
 // the missing-column migration bug instantly.
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 const DB_DIR = process.env.NC_HARNESS_DB_DIR ?? join(import.meta.dir, ".data");
 mkdirSync(DB_DIR, { recursive: true });

@@ -15,7 +15,6 @@ import "prismjs/components/prism-yaml";
 import "prismjs/components/prism-toml";
 import "prismjs/components/prism-json";
 import "prismjs/components/prism-markdown";
-import { colors, fonts } from "./theme";
 
 // Syntax coloring for reader code blocks via prismjs (fully local). The
 // language comes from the highlighter hint preserved at extraction time

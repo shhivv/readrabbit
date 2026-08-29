@@ -62,7 +62,6 @@ import { colors, fonts, spacing } from "@/lib/theme";
 import { capture } from "@/lib/analytics";
 
 const SPRING_CONFIG = { damping: 20, stiffness: 300, mass: 0.8 };
-const SPRING_SNAPPY = { damping: 15, stiffness: 400, mass: 0.5 };
 const ENTER_DURATION = 500;
 const ENTER_EASE = Easing.out(Easing.exp);
 const OVERFLOW_BUTTON_SIZE = 44;
@@ -318,43 +317,6 @@ const domVisitors = {
 // ---------- small components ----------
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
-
-function ActionButton({
-  label,
-  active,
-  onPress,
-}: {
-  label: string;
-  active?: boolean;
-  onPress: () => void;
-}) {
-  const scale = useSharedValue(1);
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
-
-  return (
-    <AnimatedPressable
-      onPressIn={() => {
-        scale.value = withSpring(0.92, SPRING_SNAPPY);
-      }}
-      onPressOut={() => {
-        scale.value = withSpring(1, SPRING_CONFIG);
-      }}
-      onPress={onPress}
-      hitSlop={12}
-      style={[
-        styles.actionBtn,
-        active && styles.actionBtnActive,
-        animatedStyle,
-      ]}
-    >
-      <Text style={[styles.actionLabel, active && styles.actionLabelActive]}>
-        {label}
-      </Text>
-    </AnimatedPressable>
-  );
-}
 
 function HeartBadge({ liked }: { liked: boolean }) {
   const scale = useSharedValue(liked ? 1 : 0);
@@ -709,7 +671,7 @@ export default function ReaderScreen() {
   const insets = useSafeAreaInsets();
   const contentWidth = width - spacing.lg * 2;
 
-  const [dequeIds, setDequeIds] = useState<number[]>([]);
+  const [, setDequeIds] = useState<number[]>([]);
   const dequeRef = useRef<number[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const currentIndexRef = useRef(0);
@@ -733,7 +695,7 @@ export default function ReaderScreen() {
     // staggered: each hydrate parses full content on the JS thread, and a
     // burst of them mid-swipe-animation would stutter the frame pacing
     let offset = 0;
-    const queue: Array<[number, boolean]> = [];
+    const queue: [number, boolean][] = [];
     for (let i = 1; i <= PREFETCH_AHEAD; i++) {
       const idx = index + i;
       if (idx < ids.length && !hydrationCache.has(ids[idx])) {
@@ -813,7 +775,6 @@ export default function ReaderScreen() {
   // contract ships, wait for a genuinely varied opening rather than serving
   // whichever prolific feed happened to finish first.
   useEffect(() => {
-    setLoading(true);
     (async () => {
       refreshIfNeeded().catch(() => {});
 
@@ -1720,23 +1681,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-  },
-  actionBtn: {
-    paddingVertical: 5,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-  },
-  actionBtnActive: {
-    backgroundColor: "rgba(201, 168, 124, 0.1)",
-  },
-  actionLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.textTertiary,
-    letterSpacing: 0.5,
-  },
-  actionLabelActive: {
-    color: colors.accent,
   },
   leadImage: {
     width: "100%",

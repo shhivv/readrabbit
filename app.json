@@ -10,7 +10,21 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "icon": "./assets/images/icon.png",
-      "bundleIdentifier": "com.readrabbit.app"
+      "bundleIdentifier": "com.readrabbit.app",
+      "buildNumber": "1",
+      "privacyManifests": {
+        "NSPrivacyTracking": false,
+        "NSPrivacyCollectedDataTypes": [
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeProductInteraction",
+            "NSPrivacyCollectedDataTypeLinked": false,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAnalytics"
+            ]
+          }
+        ]
+      }
     },
     "android": {
       "package": "com.readrabbit.app",
@@ -28,6 +42,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-background-task",
       [
         "expo-splash-screen",
         {
@@ -35,7 +50,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 180
         }
-      ]
+      ],
+      "expo-font",
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,

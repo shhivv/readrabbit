@@ -2,12 +2,12 @@
 
 [readrabbit.one](https://readrabbit.one)
 
-A fully local, on-device blog discovery + reading app. No server, no accounts —
-you pick your interests, the phone itself crawls high-signal personal blogs,
-extracts clean reader-mode text (with LaTeX, markdown and code blocks), and
-serves an endless deque of worthwhile posts. Discovery branches outward: HN for
-technology, outbound-link mining from everything you already read. Mainstream
-media is filtered out by design.
+A local-first, on-device blog discovery + reading app. There is no account or
+application backend: the phone crawls high-signal personal blogs, extracts clean
+reader-mode text (with LaTeX, markdown and code blocks), and stores the library,
+bookmarks, and reading history in SQLite. Anonymous product analytics are sent
+to PostHog. Discovery branches outward through HN and outbound-link mining;
+mainstream media is filtered out by design.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ src/
     deque.ts      weighted-sampling feed ordering (quality × recency × U(0,1))
     prune.ts      storage budget: 30d text TTL, bookmark immortality, size ceiling
     crawler/
-      fetcher.ts  timeouts, UA, ≤3 concurrent, per-host politeness delays
+      fetcher.ts  timeouts, UA, cross-host concurrency, per-host politeness delays
       feeds.ts    RSS/Atom/RDF parsing + feed autodiscovery
       extract.ts  Readability-over-linkedom + CETD-style heuristic fallback
       math.ts     KaTeX pre-rendering at enrichment time ($…$, $$…$$, MathJax tags)
@@ -59,6 +59,7 @@ Typecheck: `bunx tsc --noEmit`
 
 ## Status
 
-v0.1 — onboarding, crawling, reader, discovery all local. Not yet
-device-tested in TestFlight; background-task behavior needs a physical device
-(iOS simulator never fires BGTaskScheduler).
+v0.1.4 — onboarding, crawling, reader, and discovery are implemented. Local
+simulator and release builds are supported; App Store archives are produced
+locally with Xcode rather than EAS. iOS decides when background tasks run, and
+the simulator does not exercise production background scheduling.

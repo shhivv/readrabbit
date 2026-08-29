@@ -46,3 +46,6 @@ example
 harness/.data/
 publisher/.data/
 publisher/node_modules/
+
+# Independently deployed Sites project (has its own Git repository)
+/website/

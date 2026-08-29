@@ -238,7 +238,7 @@ export function renderMathInHtml(html: string): string {
 
     // Walk text nodes; skip code/pre so snippets keep their dollars
     const walker = document.createTreeWalker(document.body, 4); // SHOW_TEXT
-    const targets: Array<{ node: Text; html: string }> = [];
+    const targets: { node: Text; html: string }[] = [];
 
     let current = walker.nextNode() as Text | null;
     while (current) {

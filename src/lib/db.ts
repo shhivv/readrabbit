@@ -755,14 +755,13 @@ export async function upsertSource(input: {
 }
 
 export async function seedCatalogSources(topics: Topic[]): Promise<number> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const catalog: Array<{
+  const catalog: {
     name: string;
     siteUrl: string;
     feedUrl: string;
     topic: Topic;
     origin?: SourceOrigin;
-  }> = require("../../assets/seed-sources.json");
+  }[] = require("../../assets/seed-sources.json");
 
   let added = 0;
   for (const entry of catalog) {

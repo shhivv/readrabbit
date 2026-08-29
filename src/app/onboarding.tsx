@@ -150,7 +150,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
           style={styles.brandIcon}
         >
           <Image
-            source={require("../../assets/images/splash-icon.png")}
+            source={require("../../assets/images/readrabbit-logo.svg")}
             style={StyleSheet.absoluteFill}
             contentFit="contain"
             accessible
@@ -238,9 +238,16 @@ function AboutStep({
         </View>
 
         <Animated.View entering={FadeIn.duration(ENTER.duration)} style={styles.facts}>
-          <FactRow icon="smartphone" text="Everything runs on this phone. No account, nothing leaves it." />
+          <FactRow
+            icon="smartphone"
+            text="Articles, bookmarks, and reading history stay on this phone. No account required."
+          />
           <FactRow icon="rss" text="Thoughtful writing from independent blogs." />
           <FactRow icon="git-branch" text="Free and open source." />
+
+          <Text style={styles.analyticsNote}>
+            Anonymous usage analytics help improve ReadRabbit.
+          </Text>
 
           <Pressable
             style={({ pressed }) => [
@@ -408,6 +415,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     color: colors.textSecondary,
+  },
+  analyticsNote: {
+    paddingHorizontal: 4,
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    lineHeight: 15,
+    color: colors.textTertiary,
+    textAlign: "center",
   },
   githubRow: {
     flexDirection: "row",

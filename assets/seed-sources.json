@@ -17,7 +17,7 @@
   { "name": "Alex Kladov (matklad)", "siteUrl": "https://matklad.github.io", "feedUrl": "https://matklad.github.io/feed.xml", "topic": "technology" },
   { "name": "Drew DeVault", "siteUrl": "https://drewdevault.com", "feedUrl": "https://drewdevault.com/blog/index.xml", "topic": "technology" },
   { "name": "Eli Bendersky", "siteUrl": "https://eli.thegreenplace.net", "feedUrl": "https://eli.thegreenplace.net/feeds/all.atom.xml", "topic": "technology" },
-  { "name": "Salvatore Sanfilippo (antirez)", "siteUrl": "http://antirez.com", "feedUrl": "http://antirez.com/rss", "topic": "technology" },
+  { "name": "Salvatore Sanfilippo (antirez)", "siteUrl": "https://antirez.com", "feedUrl": "https://antirez.com/rss", "topic": "technology" },
   { "name": "Nelson Elhage", "siteUrl": "https://blog.nelhage.com", "feedUrl": "https://blog.nelhage.com/atom.xml", "topic": "technology" },
   { "name": "Patrick McKenzie (patio11)", "siteUrl": "https://www.kalzumeus.com", "feedUrl": "https://www.kalzumeus.com/feed/articles/", "topic": "technology" },
   { "name": "Nikita Prokopov (tonsky)", "siteUrl": "https://tonsky.me", "feedUrl": "https://tonsky.me/blog/atom.xml", "topic": "technology" },

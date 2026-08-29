@@ -101,12 +101,22 @@ function RootInner() {
 export default function RootLayout() {
   return (
     <PostHogProvider
-      apiKey="<ph_project_api_key>"
+      apiKey="phc_qYDxC6W2enKfznFfoBqksn9QFwWa3X4PcWxJs6g77Ckm"
       options={{
         host: "https://us.i.posthog.com",
+        // Keep analytics session-scoped and deliberately non-identifying.
+        persistence: "memory",
+        personProfiles: "never",
+        disableGeoip: true,
+        captureAppLifecycleEvents: false,
+        setDefaultPersonProperties: false,
+        customAppProperties: (properties) => ({
+          $app_build: properties.$app_build,
+          $app_version: properties.$app_version,
+        }),
       }}
       autocapture={{
-        captureScreens: true,
+        captureScreens: false,
         captureTouches: false,
       }}
     >

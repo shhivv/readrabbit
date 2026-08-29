@@ -10,6 +10,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Animated, { FadeIn } from "react-native-reanimated";
 import { useRouter } from "expo-router";
+import * as Application from "expo-application";
 import { Feather } from "@expo/vector-icons";
 import { colors, fonts, spacing } from "@/lib/theme";
 import {
@@ -74,6 +75,8 @@ export default function SettingsScreen() {
 
   function toggle(t: Topic) {
     setSelected((prev) => {
+      if (prev.has(t) && prev.size === 1) return prev;
+
       const next = new Set(prev);
       if (next.has(t)) next.delete(t);
       else next.add(t);
@@ -82,6 +85,7 @@ export default function SettingsScreen() {
   }
 
   async function save() {
+    if (selected.size === 0) return;
     setSaving(true);
     try {
       const added = [...selected].filter((t) => !saved.has(t));
@@ -254,7 +258,9 @@ export default function SettingsScreen() {
             ) : null}
 
             <View style={styles.about}>
-              <Text style={styles.aboutLine}>ReadRabbit v0.1.0</Text>
+              <Text style={styles.aboutLine}>
+                ReadRabbit v{Application.nativeApplicationVersion ?? "0.1.4"}
+              </Text>
               <Pressable
                 style={styles.githubRow}
                 onPress={() => Linking.openURL(WEBSITE_URL)}
