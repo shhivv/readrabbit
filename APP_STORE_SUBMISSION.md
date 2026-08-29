@@ -29,7 +29,7 @@
 - [ ] Promotional text (170 chars): "A private reading app that surfaces thoughtful writing from independent blogs. No account, no ads, no attention traps. Just reading."
 - [ ] Description: Write a full description covering features (swipe reader, topic selection, bookmarks, paragraph likes, mute authors), the privacy angle (local-first, no accounts, anonymous usage analytics, open source), and the content focus (independent blogs, technology/economics/math)
 - [ ] Keywords (100 chars): `reading,rss,reader,blogs,articles,news,technology,economics,math,privacy,open source`
-- [ ] Support URL: `https://readrabbit.one`
+- [ ] Support URL: `https://readrabbit.one/support`
 - [ ] Marketing URL (optional): `https://readrabbit.one`
 
 ### Screenshots
@@ -179,6 +179,6 @@ articles will appear in the swipe reader.
 | Where | URL |
 |-------|-----|
 | App Store Connect > App Privacy > Privacy Policy | `https://readrabbit.one/privacy.html` |
-| App Store Connect > Version > Support URL | `https://readrabbit.one` |
+| App Store Connect > Version > Support URL | `https://readrabbit.one/support` |
 | App Store Connect > Version > Marketing URL | `https://readrabbit.one` |
 | PostHog project token | Configured in `src/app/_layout.tsx` |

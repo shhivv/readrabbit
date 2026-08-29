@@ -7,7 +7,7 @@
 - Primary category: News
 - Secondary category: Books
 - Bundle ID: `com.readrabbit.app`
-- SKU: `readrabbit-ios-001`
+- SKU: `readrabbit-ios`
 - Primary language: English (U.S.)
 - Price: Free
 
@@ -49,15 +49,7 @@ ReadRabbit is free and open source.
 
 ## URLs
 
-Use these working URLs until `readrabbit.one` is connected:
-
-- Support URL: `https://readrabbit.markov-4488.chatgpt.site/`
-- Marketing URL: `https://readrabbit.markov-4488.chatgpt.site/`
-- Privacy Policy URL: `https://readrabbit.markov-4488.chatgpt.site/privacy.html`
-
-After DNS is connected, replace them with:
-
-- Support URL: `https://readrabbit.one`
+- Support URL: `https://readrabbit.one/support`
 - Marketing URL: `https://readrabbit.one`
 - Privacy Policy URL: `https://readrabbit.one/privacy.html`
 

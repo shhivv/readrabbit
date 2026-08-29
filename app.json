@@ -3,7 +3,7 @@
     "name": "ReadRabbit",
     "slug": "readrabbit",
     "githubUrl": "https://github.com/shhivv/readrabbit",
-    "version": "0.1.4",
+    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "readrabbit",
@@ -12,6 +12,9 @@
       "icon": "./assets/images/icon.png",
       "bundleIdentifier": "com.readrabbit.app",
       "buildNumber": "1",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyCollectedDataTypes": [
