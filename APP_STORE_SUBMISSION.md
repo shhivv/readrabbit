@@ -62,6 +62,12 @@ interaction events. It does not create person profiles, perform GeoIP
 enrichment, collect touch recordings, or use IDFA. Its random analytics
 identifier is session-scoped and discarded when the app restarts.
 
+SCREENSHOT CONTENT: The article titled "The Shape of a Useful Question,"
+credited to Mara Vale and The Quiet Index, is entirely fictional. It was
+written by the ReadRabbit development team solely to demonstrate the reader
+interface in App Store screenshots. It is not copied from or attributed to a
+real author, publication, or website.
+
 NO ACCOUNT REQUIRED: The app has no login, registration, or account
 system. All data is stored locally on the device in a SQLite database.
 
